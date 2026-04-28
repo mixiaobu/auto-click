@@ -4,6 +4,8 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,8 +26,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Stop
@@ -47,16 +47,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -326,8 +333,8 @@ private fun AutoClickContent(
             .background(MaterialTheme.colorScheme.background)
             .verticalScroll(rememberScrollState())
             .padding(contentPadding)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         RuntimeSection(
             overlayVisible = overlayVisible,
@@ -348,6 +355,7 @@ private fun AutoClickContent(
             onPresetNameChange = onPresetNameChange,
             onCreateNew = onCreateNew,
             onSave = onSave,
+            reorderEnabled = !clicking,
             onMovePoint = onMovePoint
         )
         PresetSection(
@@ -476,6 +484,7 @@ private fun CurrentConfigSection(
     onPresetNameChange: (String) -> Unit,
     onCreateNew: () -> Unit,
     onSave: () -> Unit,
+    reorderEnabled: Boolean,
     onMovePoint: (AutoClickPointConfig, Int) -> Unit
 ) {
     SectionSurface {
@@ -535,6 +544,7 @@ private fun CurrentConfigSection(
             durationSeconds = durationText.toIntOrNull() ?: 0,
             maxClickCount = maxClickCountText.toIntOrNull() ?: 0,
             points = points,
+            reorderEnabled = reorderEnabled,
             onMovePoint = onMovePoint
         )
         Button(
@@ -558,6 +568,7 @@ private fun ConfigSummary(
     durationSeconds: Int,
     maxClickCount: Int,
     points: List<AutoClickPointConfig>,
+    reorderEnabled: Boolean,
     onMovePoint: (AutoClickPointConfig, Int) -> Unit
 ) {
     Surface(
@@ -567,28 +578,23 @@ private fun ConfigSummary(
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
                 text = "当前指针数：${points.size}",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold
             )
-            Text(
-                text = "点击间隔：${formatInterval(intervalMillis)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = "持续时间：${formatDuration(durationSeconds)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = "点击次数：${formatClickCount(maxClickCount)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MetaTag(text = formatInterval(intervalMillis))
+                MetaTag(text = formatDuration(durationSeconds))
+                MetaTag(text = formatClickCount(maxClickCount))
+            }
         }
     }
     if (points.isEmpty()) {
@@ -600,14 +606,15 @@ private fun ConfigSummary(
     } else {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             points.forEachIndexed { index, point ->
-                PointRow(
-                    index = index,
-                    point = point,
-                    canMoveUp = index > 0,
-                    canMoveDown = index < points.lastIndex,
-                    onMoveUp = { onMovePoint(point, index - 1) },
-                    onMoveDown = { onMovePoint(point, index + 1) }
-                )
+                key(point.id) {
+                    PointRow(
+                        index = index,
+                        point = point,
+                        lastIndex = points.lastIndex,
+                        reorderEnabled = reorderEnabled,
+                        onMovePoint = onMovePoint
+                    )
+                }
             }
         }
     }
@@ -617,74 +624,109 @@ private fun ConfigSummary(
 private fun PointRow(
     index: Int,
     point: AutoClickPointConfig,
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit
+    lastIndex: Int,
+    reorderEnabled: Boolean,
+    onMovePoint: (AutoClickPointConfig, Int) -> Unit
 ) {
-    Row(
+    var rowHeightPx by remember { mutableStateOf(0) }
+    var dragging by remember { mutableStateOf(false) }
+    var dragOffsetY by remember { mutableStateOf(0f) }
+    val density = LocalDensity.current
+    val itemDistancePx = with(density) { rowHeightPx.toFloat() + 8.dp.toPx() }.coerceAtLeast(1f)
+    val currentIndex by rememberUpdatedState(index)
+    val currentPoint by rememberUpdatedState(point)
+    val currentLastIndex by rememberUpdatedState(lastIndex)
+    val currentOnMovePoint by rememberUpdatedState(onMovePoint)
+    val canReorder = reorderEnabled && lastIndex > 0
+    val dragModifier = if (canReorder) {
+        Modifier.pointerInput(point.id, itemDistancePx) {
+            detectDragGesturesAfterLongPress(
+                onDragStart = {
+                    dragging = true
+                    dragOffsetY = 0f
+                },
+                onDragEnd = {
+                    dragging = false
+                    dragOffsetY = 0f
+                },
+                onDragCancel = {
+                    dragging = false
+                    dragOffsetY = 0f
+                },
+                onDrag = { change, dragAmount ->
+                    change.consume()
+                    dragOffsetY += dragAmount.y
+                    val threshold = itemDistancePx / 2f
+                    when {
+                        dragOffsetY <= -threshold && currentIndex > 0 -> {
+                            currentOnMovePoint(currentPoint, currentIndex - 1)
+                            dragOffsetY += itemDistancePx
+                        }
+                        dragOffsetY >= threshold && currentIndex < currentLastIndex -> {
+                            currentOnMovePoint(currentPoint, currentIndex + 1)
+                            dragOffsetY -= itemDistancePx
+                        }
+                    }
+                }
+            )
+        }
+    } else {
+        Modifier
+    }
+
+    Surface(
+        color = if (dragging) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        },
+        shape = RoundedCornerShape(8.dp),
+        tonalElevation = if (dragging) 4.dp else 0.dp,
         modifier = Modifier
             .fillMaxWidth()
-            .background(
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                shape = RoundedCornerShape(8.dp)
-            )
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .onSizeChanged { rowHeightPx = it.height }
+            .zIndex(if (dragging) 1f else 0f)
+            .graphicsLayer {
+                translationY = if (dragging) dragOffsetY else 0f
+                scaleX = if (dragging) 1.01f else 1f
+                scaleY = if (dragging) 1.01f else 1f
+            }
+            .then(dragModifier)
     ) {
-        Box(
-            modifier = Modifier
-                .size(24.dp)
-                .background(
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                    shape = CircleShape
-                ),
-            contentAlignment = Alignment.Center
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = (index + 1).toString(),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold
-            )
-        }
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Text(
-                text = "指针 ${index + 1}",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                text = "坐标：${point.x}, ${point.y}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            IconButton(
-                onClick = onMoveUp,
-                enabled = canMoveUp,
-                modifier = Modifier.size(32.dp)
+            Box(
+                modifier = Modifier
+                    .size(26.dp)
+                    .background(
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                        shape = CircleShape
+                    ),
+                contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.KeyboardArrowUp,
-                    contentDescription = "上移",
-                    modifier = Modifier.size(20.dp)
+                Text(
+                    text = (index + 1).toString(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
                 )
             }
-            IconButton(
-                onClick = onMoveDown,
-                enabled = canMoveDown,
-                modifier = Modifier.size(32.dp)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.KeyboardArrowDown,
-                    contentDescription = "下移",
-                    modifier = Modifier.size(20.dp)
+                Text(
+                    text = "指针 ${index + 1}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "坐标：${point.x}, ${point.y}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -783,7 +825,9 @@ private fun PresetRow(
                 }
             }
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 MetaTag(text = formatInterval(preset.config.intervalMillis))
@@ -838,8 +882,8 @@ private fun SectionSurface(content: @Composable ColumnScope.() -> Unit) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
             content = content
         )
     }
