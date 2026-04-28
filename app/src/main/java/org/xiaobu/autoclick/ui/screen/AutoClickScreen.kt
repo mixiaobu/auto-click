@@ -26,7 +26,6 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Save
-import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -84,8 +83,6 @@ fun AutoClickScreen(onBack: (() -> Unit)? = null) {
     var presetNameText by rememberSaveable { mutableStateOf("") }
     var points by remember { mutableStateOf(emptyList<AutoClickPointConfig>()) }
     var presets by remember { mutableStateOf(emptyList<AutoClickPresetConfig>()) }
-    var overlayGranted by remember { mutableStateOf(false) }
-    var accessibilityGranted by remember { mutableStateOf(false) }
     var overlayVisible by remember { mutableStateOf(false) }
     var clicking by remember { mutableStateOf(false) }
 
@@ -97,8 +94,6 @@ fun AutoClickScreen(onBack: (() -> Unit)? = null) {
         }
         points = config.points
         presets = store.getPresets()
-        overlayGranted = Settings.canDrawOverlays(context)
-        accessibilityGranted = AutoClickAccessibilityService.isServiceEnabled(context)
         overlayVisible = AutoClickOverlayService.isOverlayVisible()
         clicking = AutoClickOverlayService.isClicking()
     }
@@ -182,8 +177,6 @@ fun AutoClickScreen(onBack: (() -> Unit)? = null) {
     ) { innerPadding ->
         AutoClickContent(
             contentPadding = innerPadding,
-            overlayGranted = overlayGranted,
-            accessibilityGranted = accessibilityGranted,
             overlayVisible = overlayVisible,
             clicking = clicking,
             intervalText = intervalText,
@@ -215,29 +208,17 @@ fun AutoClickScreen(onBack: (() -> Unit)? = null) {
             },
             onStart = {
                 saveConfig(saveAsPreset = false, showToast = false)
-                when {
-                    !Settings.canDrawOverlays(context) -> {
-                        AutoClickApp.showToast("请先开启悬浮窗权限")
-                        openOverlayPermission(context)
-                    }
-
-                    !AutoClickAccessibilityService.isServiceEnabled(context) -> {
-                        AutoClickApp.showToast("请先开启无障碍权限")
-                        openAccessibilitySettings(context)
-                    }
-
-                    else -> {
-                        AutoClickOverlayService.show(context)
-                        refreshStatus()
-                    }
+                if (!Settings.canDrawOverlays(context) || !AutoClickAccessibilityService.isServiceEnabled(context)) {
+                    AutoClickApp.showToast("请先在首页开启悬浮窗和无障碍权限")
+                } else {
+                    AutoClickOverlayService.show(context)
+                    refreshStatus()
                 }
             },
             onStop = {
                 AutoClickOverlayService.hide(context)
                 refreshStatus()
-            },
-            onOverlayPermission = { openOverlayPermission(context) },
-            onAccessibilityPermission = { openAccessibilitySettings(context) }
+            }
         )
     }
 }
@@ -245,8 +226,6 @@ fun AutoClickScreen(onBack: (() -> Unit)? = null) {
 @Composable
 private fun AutoClickContent(
     contentPadding: PaddingValues,
-    overlayGranted: Boolean,
-    accessibilityGranted: Boolean,
     overlayVisible: Boolean,
     clicking: Boolean,
     intervalText: String,
@@ -265,9 +244,7 @@ private fun AutoClickContent(
     onDecodePreset: (String) -> AutoClickPresetConfig?,
     onDeletePreset: (AutoClickPresetConfig) -> Unit,
     onStart: () -> Unit,
-    onStop: () -> Unit,
-    onOverlayPermission: () -> Unit,
-    onAccessibilityPermission: () -> Unit
+    onStop: () -> Unit
 ) {
     val context = LocalContext.current
     var pendingDeletePreset by remember { mutableStateOf<AutoClickPresetConfig?>(null) }
@@ -313,15 +290,11 @@ private fun AutoClickContent(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         RuntimeSection(
-            overlayGranted = overlayGranted,
-            accessibilityGranted = accessibilityGranted,
             overlayVisible = overlayVisible,
             clicking = clicking,
             pointCount = points.size,
             onStart = onStart,
-            onStop = onStop,
-            onOverlayPermission = onOverlayPermission,
-            onAccessibilityPermission = onAccessibilityPermission
+            onStop = onStop
         )
         CurrentConfigSection(
             intervalText = intervalText,
@@ -375,15 +348,11 @@ private fun AutoClickContent(
 
 @Composable
 private fun RuntimeSection(
-    overlayGranted: Boolean,
-    accessibilityGranted: Boolean,
     overlayVisible: Boolean,
     clicking: Boolean,
     pointCount: Int,
     onStart: () -> Unit,
-    onStop: () -> Unit,
-    onOverlayPermission: () -> Unit,
-    onAccessibilityPermission: () -> Unit
+    onStop: () -> Unit
 ) {
     SectionSurface {
         Text(
@@ -403,23 +372,6 @@ private fun RuntimeSection(
             Spacer(modifier = Modifier.size(8.dp))
             Text(if (overlayVisible) "停止悬浮控制器" else "启动悬浮控制器")
         }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            StatusChip(
-                label = "悬浮窗",
-                value = if (overlayGranted) "已授权" else "未授权",
-                highlighted = overlayGranted,
-                modifier = Modifier.weight(1f)
-            )
-            StatusChip(
-                label = "无障碍",
-                value = if (accessibilityGranted) "已开启" else "未开启",
-                highlighted = accessibilityGranted,
-                modifier = Modifier.weight(1f)
-            )
-        }
         StatusChip(
             label = "当前状态",
             value = when {
@@ -430,35 +382,6 @@ private fun RuntimeSection(
             highlighted = overlayVisible || clicking,
             modifier = Modifier.fillMaxWidth()
         )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(
-                onClick = onOverlayPermission,
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Settings,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.size(6.dp))
-                Text("悬浮窗")
-            }
-            OutlinedButton(
-                onClick = onAccessibilityPermission,
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Settings,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.size(6.dp))
-                Text("无障碍")
-            }
-        }
     }
 }
 

@@ -59,6 +59,22 @@ fun MainScreen(
         enabledTriggerCount = triggers.count { it.enabled }
     }
 
+    fun openFeatureIfPermissionsGranted(onOpen: () -> Unit) {
+        val hasOverlayPermission = Settings.canDrawOverlays(context)
+        val hasAccessibilityPermission = AutoClickAccessibilityService.isServiceEnabled(context)
+        overlayGranted = hasOverlayPermission
+        accessibilityGranted = hasAccessibilityPermission
+        when {
+            !hasOverlayPermission && !hasAccessibilityPermission ->
+                AutoClickApp.showToast("请先开启悬浮窗和无障碍权限")
+            !hasOverlayPermission ->
+                AutoClickApp.showToast("请先开启悬浮窗权限")
+            !hasAccessibilityPermission ->
+                AutoClickApp.showToast("请先开启无障碍权限")
+            else -> onOpen()
+        }
+    }
+
     LaunchedEffect(Unit) {
         refreshState()
     }
@@ -97,13 +113,13 @@ fun MainScreen(
                 title = "连点器",
                 description = "多点顺序点击，支持间隔、持续时长和历史配置",
                 countLabel = "$autoClickPresetCount 个历史配置",
-                onClick = onOpenAutoClick
+                onClick = { openFeatureIfPermissionsGranted(onOpenAutoClick) }
             )
             ToolEntry(
                 title = "触发器",
                 description = "监听目标应用事件，自动执行点击、滑动和系统动作",
                 countLabel = "$triggerCount 条规则 · $enabledTriggerCount 条启用",
-                onClick = onOpenTrigger
+                onClick = { openFeatureIfPermissionsGranted(onOpenTrigger) }
             )
         }
     }
