@@ -42,7 +42,6 @@ fun AutoClickOverlayPanel(
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
         shape = RoundedCornerShape(14.dp),
         tonalElevation = 8.dp,
-        shadowElevation = 8.dp,
         modifier = Modifier.widthIn(min = 184.dp, max = 220.dp)
     ) {
         Column(

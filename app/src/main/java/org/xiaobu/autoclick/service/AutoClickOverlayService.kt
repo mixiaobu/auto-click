@@ -3,6 +3,7 @@ package org.xiaobu.autoclick.service
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.graphics.Point
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -297,6 +298,7 @@ class AutoClickOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwn
 
     private fun createPanelView() {
         val composeView = ComposeView(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
             setViewTreeLifecycleOwner(this@AutoClickOverlayService)
             setViewTreeSavedStateRegistryOwner(this@AutoClickOverlayService)
             setContent {
@@ -638,6 +640,7 @@ class AutoClickOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwn
     private fun ensureQuickControlView() {
         if (quickControlView != null) return
         val composeView = ComposeView(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
             setViewTreeLifecycleOwner(this@AutoClickOverlayService)
             setViewTreeSavedStateRegistryOwner(this@AutoClickOverlayService)
             setContent {

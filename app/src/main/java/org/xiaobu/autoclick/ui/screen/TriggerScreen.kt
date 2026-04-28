@@ -1,9 +1,10 @@
 package org.xiaobu.autoclick.ui.screen
 
-import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -25,7 +27,6 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Save
-import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -76,7 +77,6 @@ import org.xiaobu.autoclick.data.task.AutoTaskTargetType
 import org.xiaobu.autoclick.data.trigger.AutoTriggerApp
 import org.xiaobu.autoclick.data.trigger.AutoTriggerConfig
 import org.xiaobu.autoclick.data.trigger.AutoTriggerEventType
-import org.xiaobu.autoclick.service.AutoClickAccessibilityService
 import org.xiaobu.autoclick.ui.component.ActionStepEditorDialog
 import org.xiaobu.autoclick.ui.component.ActionStepEditorState
 import org.xiaobu.autoclick.ui.component.validateActionStepEditor
@@ -90,8 +90,6 @@ fun TriggerScreen(onBack: () -> Unit) {
     val lifecycleOwner = LocalLifecycleOwner.current
     var draftTrigger by remember { mutableStateOf(store.getDraft()) }
     var savedTriggers by remember { mutableStateOf(store.getTriggers()) }
-    var overlayGranted by remember { mutableStateOf(false) }
-    var accessibilityGranted by remember { mutableStateOf(false) }
     var editorState by remember { mutableStateOf<ActionStepEditorState?>(null) }
     var showAppPicker by remember { mutableStateOf(false) }
     var showEventPicker by remember { mutableStateOf(false) }
@@ -100,8 +98,6 @@ fun TriggerScreen(onBack: () -> Unit) {
 
     fun refreshState() {
         savedTriggers = store.getTriggers()
-        overlayGranted = Settings.canDrawOverlays(context)
-        accessibilityGranted = AutoClickAccessibilityService.isServiceEnabled(context)
     }
 
     fun syncDraft(trigger: AutoTriggerConfig) {
@@ -184,15 +180,9 @@ fun TriggerScreen(onBack: () -> Unit) {
                 .background(MaterialTheme.colorScheme.background)
                 .verticalScroll(rememberScrollState())
                 .padding(innerPadding)
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            TriggerStatusSection(
-                overlayGranted = overlayGranted,
-                accessibilityGranted = accessibilityGranted,
-                onOverlayPermission = { openOverlayPermission(context) },
-                onAccessibilityPermission = { openAccessibilitySettings(context) }
-            )
             TriggerDraftSection(
                 draftTrigger = draftTrigger,
                 onDraftChange = ::syncDraft,
@@ -324,54 +314,6 @@ fun TriggerScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun TriggerStatusSection(
-    overlayGranted: Boolean,
-    accessibilityGranted: Boolean,
-    onOverlayPermission: () -> Unit,
-    onAccessibilityPermission: () -> Unit
-) {
-    SectionSurface {
-        Text(
-            text = "权限状态",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            StatusChip(
-                label = "悬浮窗",
-                value = if (overlayGranted) "已授权" else "未授权",
-                highlighted = overlayGranted,
-                modifier = Modifier.weight(1f)
-            )
-            StatusChip(
-                label = "无障碍",
-                value = if (accessibilityGranted) "已开启" else "未开启",
-                highlighted = accessibilityGranted,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(onClick = onOverlayPermission, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Rounded.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.size(6.dp))
-                Text("悬浮窗")
-            }
-            OutlinedButton(onClick = onAccessibilityPermission, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Rounded.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.size(6.dp))
-                Text("无障碍")
-            }
-        }
-    }
-}
-
-@Composable
 private fun TriggerDraftSection(
     draftTrigger: AutoTriggerConfig,
     onDraftChange: (AutoTriggerConfig) -> Unit,
@@ -407,17 +349,22 @@ private fun TriggerDraftSection(
             label = { Text("触发器名称") },
             singleLine = true
         )
-        OutlinedButton(
-            onClick = onSelectApps,
-            modifier = Modifier.fillMaxWidth()
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(buildTriggerAppSummary(draftTrigger))
-        }
-        OutlinedButton(
-            onClick = onSelectEvents,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(buildTriggerEventSummary(draftTrigger.effectiveEventTypes))
+            SelectFieldButton(
+                label = "目标应用",
+                value = buildTriggerAppSummary(draftTrigger),
+                onClick = onSelectApps,
+                modifier = Modifier.fillMaxWidth()
+            )
+            SelectFieldButton(
+                label = "触发事件",
+                value = buildTriggerEventSummary(draftTrigger.effectiveEventTypes),
+                onClick = onSelectEvents,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
         OutlinedTextField(
             value = draftTrigger.cooldownMs.toString(),
@@ -436,16 +383,32 @@ private fun TriggerDraftSection(
             label = { Text("可选关键词过滤") },
             singleLine = true
         )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Text("关键词精确匹配", style = MaterialTheme.typography.bodyMedium)
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text("关键词精确匹配", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = if (draftTrigger.keywordExact) "页面文本必须完全一致" else "页面文本包含关键词即可",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             Switch(
                 checked = draftTrigger.keywordExact,
                 onCheckedChange = { onDraftChange(draftTrigger.copy(keywordExact = it)) }
             )
+            }
         }
         StepList(
             steps = draftTrigger.steps,
@@ -460,6 +423,37 @@ private fun TriggerDraftSection(
             Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.size(8.dp))
             Text("保存触发器")
+        }
+    }
+}
+
+@Composable
+private fun SelectFieldButton(
+    label: String,
+    value: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalAlignment = Alignment.Start
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -496,46 +490,77 @@ private fun StepList(
             )
         } else {
             steps.forEachIndexed { index, step ->
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(3.dp)
-                        ) {
-                            Text(
-                                text = "${index + 1}. ${step.title.ifBlank { step.actionType.title }}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = buildStepSummary(step),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        TextButton(onClick = { onEditStep(step) }) {
-                            Text("编辑")
-                        }
-                        IconButton(onClick = { onDeleteStep(step) }, modifier = Modifier.size(32.dp)) {
-                            Icon(
-                                imageVector = Icons.Rounded.DeleteOutline,
-                                contentDescription = "删除",
-                                tint = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-                }
+                StepRow(
+                    index = index,
+                    step = step,
+                    onEdit = { onEditStep(step) },
+                    onDelete = { onDeleteStep(step) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StepRow(
+    index: Int,
+    step: AutoTaskStep,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(26.dp)
+                    .background(
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                        shape = CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = (index + 1).toString(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Text(
+                    text = step.title.ifBlank { step.actionType.title },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = buildStepSummary(step),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            TextButton(onClick = onEdit) {
+                Text("编辑")
+            }
+            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    imageVector = Icons.Rounded.DeleteOutline,
+                    contentDescription = "删除",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
     }
@@ -616,21 +641,22 @@ private fun SavedTriggerRow(
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold
                     )
-                    Text(
-                        text = "${buildTriggerEventSummary(trigger.effectiveEventTypes)} · ${buildTriggerAppSummary(trigger)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "步骤 ${trigger.steps.size} 个 · ${formatTime(trigger.updatedAt)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
                 Switch(
                     checked = trigger.enabled,
                     onCheckedChange = onToggleEnabled
                 )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MetaTag(text = buildTriggerEventSummary(trigger.effectiveEventTypes))
+                MetaTag(text = buildTriggerAppSummary(trigger))
+                MetaTag(text = "步骤 ${trigger.steps.size} 个")
+                MetaTag(text = formatTime(trigger.updatedAt))
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -639,7 +665,13 @@ private fun SavedTriggerRow(
                 OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
                     Text("导出")
                 }
-                OutlinedButton(onClick = onDelete, modifier = Modifier.weight(1f)) {
+                OutlinedButton(
+                    onClick = onDelete,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
                     Text("删除")
                 }
                 Button(onClick = onApply, modifier = Modifier.weight(1f)) {
@@ -817,37 +849,19 @@ private fun AppSelectionRow(
 }
 
 @Composable
-private fun StatusChip(
-    label: String,
-    value: String,
-    highlighted: Boolean,
-    modifier: Modifier = Modifier
-) {
+private fun MetaTag(text: String) {
     Surface(
-        color = if (highlighted) {
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-        } else {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-        },
-        shape = RoundedCornerShape(8.dp),
-        modifier = modifier
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(999.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                fontWeight = FontWeight.SemiBold
-            )
-        }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+        )
     }
 }
 
@@ -860,8 +874,8 @@ private fun SectionSurface(content: @Composable ColumnScope.() -> Unit) {
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
             content = content
         )
     }
