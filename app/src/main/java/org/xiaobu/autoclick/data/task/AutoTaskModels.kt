@@ -24,7 +24,9 @@ enum class AutoTaskTargetType(
     val title: String
 ) {
     COORDINATE("坐标"),
-    NODE_TEXT("文字查找")
+    NODE_TEXT("文字查找"),
+    OCR_TEXT("OCR 文字"),
+    IMAGE("图片识别")
 }
 
 data class AutoTaskTarget(
@@ -33,7 +35,8 @@ data class AutoTaskTarget(
     val y: Int = 0,
     val text: String = "",
     val index: Int = 1,
-    val exact: Boolean = false
+    val exact: Boolean = false,
+    val imageUri: String = ""
 )
 
 data class AutoTaskStep(

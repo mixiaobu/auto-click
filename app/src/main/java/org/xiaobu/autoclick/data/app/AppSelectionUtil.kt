@@ -3,6 +3,7 @@ package org.xiaobu.autoclick.data.app
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.graphics.drawable.Drawable
 import android.os.Build
 
 data class InstalledAppInfo(
@@ -42,4 +43,11 @@ fun Context.resolveAppLabel(packageName: String): String {
         val info = packageManager.getApplicationInfo(packageName, 0)
         packageManager.getApplicationLabel(info).toString()
     }.getOrDefault(packageName)
+}
+
+fun Context.getAppIcon(packageName: String): Drawable? {
+    if (packageName.isBlank()) return null
+    return runCatching {
+        packageManager.getApplicationIcon(packageName)
+    }.getOrNull()
 }

@@ -132,7 +132,8 @@ class AutoTriggerStore(context: Context) {
             x = x.coerceAtLeast(0),
             y = y.coerceAtLeast(0),
             text = text.trim(),
-            index = index.coerceAtLeast(1)
+            index = index.coerceAtLeast(1),
+            imageUri = imageUri.trim()
         )
     }
 

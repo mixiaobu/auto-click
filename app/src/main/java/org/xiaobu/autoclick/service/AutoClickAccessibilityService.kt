@@ -6,15 +6,24 @@ import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Path
 import android.graphics.Point
 import android.graphics.Rect
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import java.net.URL
 import kotlin.coroutines.resume
+import kotlin.math.abs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +33,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import org.xiaobu.autoclick.AutoClickApp
 import org.xiaobu.autoclick.data.task.AutoTaskActionType
 import org.xiaobu.autoclick.data.task.AutoTaskStep
@@ -333,6 +343,17 @@ class AutoClickAccessibilityService : AccessibilityService() {
                 index = target.index - 1,
                 exact = target.exact
             )?.let { Point(it.centerX(), it.centerY()) }
+
+            AutoTaskTargetType.OCR_TEXT -> findBoundsByOcr(
+                text = target.text,
+                index = target.index - 1,
+                exact = target.exact
+            )?.let { Point(it.centerX(), it.centerY()) }
+
+            AutoTaskTargetType.IMAGE -> {
+                val bitmap = loadTargetBitmap(target.imageUri) ?: return null
+                findBoundsByImage(bitmap)?.let { Point(it.centerX(), it.centerY()) }
+            }
         }
     }
 
@@ -455,6 +476,132 @@ class AutoClickAccessibilityService : AccessibilityService() {
             }
     }
 
+    private suspend fun findBoundsByOcr(
+        text: String,
+        index: Int = 0,
+        exact: Boolean = false
+    ): Rect? {
+        val keyword = text.trim()
+        if (keyword.isBlank()) return null
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            Log.w(TAG, "OCR requires Android 11 or above")
+            return null
+        }
+        val screenshot = takeScreenshotBitmap() ?: return null
+        val recognizer = TextRecognition.getClient(
+            ChineseTextRecognizerOptions.Builder().build()
+        )
+        return suspendCancellableCoroutine { continuation ->
+            val image = InputImage.fromBitmap(screenshot, 0)
+            recognizer.process(image)
+                .addOnSuccessListener { result ->
+                    val matchedRects = buildList {
+                        result.textBlocks.forEach { block ->
+                            if (matchesText(block.text.orEmpty(), keyword, exact)) {
+                                block.boundingBox?.let(::add)
+                            }
+                            block.lines.forEach { line ->
+                                if (matchesText(line.text.orEmpty(), keyword, exact)) {
+                                    line.boundingBox?.let(::add)
+                                }
+                                line.elements.forEach { element ->
+                                    if (matchesText(element.text.orEmpty(), keyword, exact)) {
+                                        element.boundingBox?.let(::add)
+                                    }
+                                }
+                            }
+                        }
+                    }.distinctBy { it.rectKey() }
+                    if (continuation.isActive) {
+                        continuation.resume(matchedRects.getOrNull(index.coerceAtLeast(0)))
+                    }
+                    recognizer.close()
+                }
+                .addOnFailureListener { error ->
+                    Log.e(TAG, "OCR failed: text=$keyword", error)
+                    if (continuation.isActive) continuation.resume(null)
+                    recognizer.close()
+                }
+                .addOnCanceledListener {
+                    if (continuation.isActive) continuation.resume(null)
+                    recognizer.close()
+                }
+        }
+    }
+
+    private suspend fun findBoundsByImage(
+        targetBitmap: Bitmap,
+        threshold: Float = 0.90f,
+        sampleStep: Int = 4,
+        searchStep: Int = 4
+    ): Rect? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val screenshot = takeScreenshotBitmap() ?: return null
+        return withContext(Dispatchers.Default) {
+            findTemplateBounds(
+                screenBitmap = screenshot,
+                targetBitmap = targetBitmap,
+                threshold = threshold,
+                sampleStep = sampleStep,
+                searchStep = searchStep
+            )
+        }
+    }
+
+    private suspend fun loadTargetBitmap(imageUri: String): Bitmap? {
+        if (imageUri.isBlank()) return null
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                when {
+                    imageUri.startsWith("content://") || imageUri.startsWith("file://") -> {
+                        contentResolver.openInputStream(Uri.parse(imageUri))?.use { stream ->
+                            BitmapFactory.decodeStream(stream)
+                        }
+                    }
+
+                    imageUri.startsWith("http://") || imageUri.startsWith("https://") -> {
+                        URL(imageUri).openStream().use { stream ->
+                            BitmapFactory.decodeStream(stream)
+                        }
+                    }
+
+                    else -> BitmapFactory.decodeFile(imageUri)
+                }
+            }.getOrNull()
+        }
+    }
+
+    private suspend fun takeScreenshotBitmap(): Bitmap? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        return suspendCancellableCoroutine { continuation ->
+            try {
+                takeScreenshot(
+                    Display.DEFAULT_DISPLAY,
+                    mainExecutor,
+                    object : TakeScreenshotCallback {
+                        override fun onSuccess(result: ScreenshotResult) {
+                            val bitmap = runCatching {
+                                result.hardwareBuffer.use { hardwareBuffer ->
+                                    Bitmap.wrapHardwareBuffer(hardwareBuffer, result.colorSpace)
+                                        ?.copy(Bitmap.Config.ARGB_8888, false)
+                                }
+                            }.getOrNull()
+                            if (continuation.isActive) continuation.resume(bitmap)
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            Log.w(TAG, "takeScreenshot failed: errorCode=$errorCode")
+                            if (continuation.isActive) continuation.resume(null)
+                        }
+                    }
+                )
+            } catch (error: Exception) {
+                Log.e(TAG, "takeScreenshot exception", error)
+                if (continuation.isActive) continuation.resume(null)
+            }
+        }
+    }
+
     private fun collectNodeMatches(
         keyword: String,
         exact: Boolean
@@ -526,5 +673,90 @@ class AutoClickAccessibilityService : AccessibilityService() {
         } else {
             source.contains(target, ignoreCase = true)
         }
+    }
+
+    private fun Rect.rectKey(): String {
+        return "$left,$top,$right,$bottom"
+    }
+
+    private fun findTemplateBounds(
+        screenBitmap: Bitmap,
+        targetBitmap: Bitmap,
+        threshold: Float,
+        sampleStep: Int,
+        searchStep: Int
+    ): Rect? {
+        val screenWidth = screenBitmap.width
+        val screenHeight = screenBitmap.height
+        val targetWidth = targetBitmap.width
+        val targetHeight = targetBitmap.height
+        if (targetWidth <= 0 || targetHeight <= 0) return null
+        if (targetWidth > screenWidth || targetHeight > screenHeight) return null
+
+        val safeSampleStep = sampleStep.coerceAtLeast(1)
+        val safeSearchStep = searchStep.coerceAtLeast(1)
+        val targetPixels = IntArray(targetWidth * targetHeight)
+        val screenPixels = IntArray(screenWidth * screenHeight)
+        targetBitmap.getPixels(targetPixels, 0, targetWidth, 0, 0, targetWidth, targetHeight)
+        screenBitmap.getPixels(screenPixels, 0, screenWidth, 0, 0, screenWidth, screenHeight)
+
+        var bestScore = Float.MIN_VALUE
+        var bestX = -1
+        var bestY = -1
+        var y = 0
+        while (y <= screenHeight - targetHeight) {
+            var x = 0
+            while (x <= screenWidth - targetWidth) {
+                var sampleCount = 0
+                var totalSimilarity = 0f
+                var stop = false
+                var targetY = 0
+                while (targetY < targetHeight && !stop) {
+                    var targetX = 0
+                    while (targetX < targetWidth) {
+                        val targetColor = targetPixels[targetY * targetWidth + targetX]
+                        val targetAlpha = targetColor ushr 24 and 0xFF
+                        if (targetAlpha >= 16) {
+                            val screenColor = screenPixels[(y + targetY) * screenWidth + (x + targetX)]
+                            val similarity = colorSimilarity(targetColor, screenColor)
+                            totalSimilarity += similarity
+                            sampleCount++
+                            if (sampleCount > 0) {
+                                val currentAverage = totalSimilarity / sampleCount
+                                if (currentAverage + 0.08f < threshold) {
+                                    stop = true
+                                    break
+                                }
+                            }
+                        }
+                        targetX += safeSampleStep
+                    }
+                    targetY += safeSampleStep
+                }
+                if (sampleCount > 0 && !stop) {
+                    val average = totalSimilarity / sampleCount
+                    if (average > bestScore) {
+                        bestScore = average
+                        bestX = x
+                        bestY = y
+                    }
+                }
+                x += safeSearchStep
+            }
+            y += safeSearchStep
+        }
+
+        return if (bestScore >= threshold && bestX >= 0 && bestY >= 0) {
+            Rect(bestX, bestY, bestX + targetWidth, bestY + targetHeight)
+        } else {
+            null
+        }
+    }
+
+    private fun colorSimilarity(colorA: Int, colorB: Int): Float {
+        val redDiff = abs((colorA shr 16 and 0xFF) - (colorB shr 16 and 0xFF))
+        val greenDiff = abs((colorA shr 8 and 0xFF) - (colorB shr 8 and 0xFF))
+        val blueDiff = abs((colorA and 0xFF) - (colorB and 0xFF))
+        return 1f - ((redDiff + greenDiff + blueDiff) / (255f * 3f))
     }
 }

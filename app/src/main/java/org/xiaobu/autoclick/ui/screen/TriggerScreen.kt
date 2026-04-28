@@ -1,5 +1,8 @@
 package org.xiaobu.autoclick.ui.screen
 
+import android.content.Intent
+import android.provider.Settings
+import android.widget.ImageView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -31,6 +34,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,6 +63,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -69,7 +77,9 @@ import java.util.Locale
 import kotlinx.coroutines.delay
 import org.xiaobu.autoclick.AutoClickApp
 import org.xiaobu.autoclick.data.app.InstalledAppInfo
+import org.xiaobu.autoclick.data.app.getAppIcon
 import org.xiaobu.autoclick.data.app.getInstalledAppInfo
+import org.xiaobu.autoclick.data.app.resolveAppLabel
 import org.xiaobu.autoclick.data.task.AutoTaskActionType
 import org.xiaobu.autoclick.data.task.AutoTaskStep
 import org.xiaobu.autoclick.data.task.AutoTaskTarget
@@ -77,8 +87,11 @@ import org.xiaobu.autoclick.data.task.AutoTaskTargetType
 import org.xiaobu.autoclick.data.trigger.AutoTriggerApp
 import org.xiaobu.autoclick.data.trigger.AutoTriggerConfig
 import org.xiaobu.autoclick.data.trigger.AutoTriggerEventType
+import org.xiaobu.autoclick.service.AutoTaskCoordinatePickerService
+import org.xiaobu.autoclick.ui.component.ActionStepCoordinateSlot
 import org.xiaobu.autoclick.ui.component.ActionStepEditorDialog
 import org.xiaobu.autoclick.ui.component.ActionStepEditorState
+import org.xiaobu.autoclick.ui.component.ActionStepTargetPickerSlot
 import org.xiaobu.autoclick.ui.component.validateActionStepEditor
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -93,6 +106,8 @@ fun TriggerScreen(onBack: () -> Unit) {
     var editorState by remember { mutableStateOf<ActionStepEditorState?>(null) }
     var showAppPicker by remember { mutableStateOf(false) }
     var showEventPicker by remember { mutableStateOf(false) }
+    var pickingSlot by remember { mutableStateOf<ActionStepCoordinateSlot?>(null) }
+    var imagePickerSlot by remember { mutableStateOf<ActionStepTargetPickerSlot?>(null) }
     var pendingDeleteTrigger by remember { mutableStateOf<AutoTriggerConfig?>(null) }
     var exportingTrigger by remember { mutableStateOf<AutoTriggerConfig?>(null) }
 
@@ -138,12 +153,66 @@ fun TriggerScreen(onBack: () -> Unit) {
         AutoClickApp.showToast("已导入触发器")
     }
 
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val slot = imagePickerSlot
+        imagePickerSlot = null
+        if (uri == null || slot == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        val currentEditor = editorState ?: return@rememberLauncherForActivityResult
+        editorState = when (slot) {
+            ActionStepTargetPickerSlot.TARGET -> currentEditor.copy(
+                target = currentEditor.target.copy(
+                    type = AutoTaskTargetType.IMAGE,
+                    imageUri = uri.toString()
+                )
+            )
+
+            ActionStepTargetPickerSlot.SECONDARY -> currentEditor.copy(
+                secondaryTarget = currentEditor.secondaryTarget.copy(
+                    type = AutoTaskTargetType.IMAGE,
+                    imageUri = uri.toString()
+                )
+            )
+        }
+    }
+
     LaunchedEffect(Unit) {
         refreshState()
     }
 
     LaunchedEffect(Unit) {
         while (true) {
+            AutoTaskCoordinatePickerService.consumePickedPoint()?.let { point ->
+                val currentEditor = editorState
+                val slot = pickingSlot
+                if (currentEditor != null && slot != null) {
+                    editorState = when (slot) {
+                        ActionStepCoordinateSlot.TARGET -> currentEditor.copy(
+                            target = currentEditor.target.copy(
+                                type = AutoTaskTargetType.COORDINATE,
+                                x = point.x,
+                                y = point.y
+                            )
+                        )
+
+                        ActionStepCoordinateSlot.SECONDARY -> currentEditor.copy(
+                            secondaryTarget = currentEditor.secondaryTarget.copy(
+                                type = AutoTaskTargetType.COORDINATE,
+                                x = point.x,
+                                y = point.y
+                            )
+                        )
+                    }
+                    pickingSlot = null
+                }
+            }
             refreshState()
             delay(1200)
         }
@@ -201,7 +270,14 @@ fun TriggerScreen(onBack: () -> Unit) {
                         AutoClickApp.showToast(error)
                         return@TriggerDraftSection
                     }
-                    val saved = draftTrigger.copy(updatedAt = System.currentTimeMillis())
+                    val primaryApp = draftTrigger.targetApps.firstOrNull()
+                    val saved = draftTrigger.copy(
+                        packageName = primaryApp?.packageName.orEmpty(),
+                        appLabel = primaryApp?.appLabel.orEmpty().ifBlank {
+                            context.resolveAppLabel(primaryApp?.packageName.orEmpty())
+                        },
+                        updatedAt = System.currentTimeMillis()
+                    )
                     store.saveTrigger(saved)
                     syncDraft(saved)
                     AutoClickApp.showToast("触发器已保存")
@@ -227,8 +303,30 @@ fun TriggerScreen(onBack: () -> Unit) {
     editorState?.let { state ->
         ActionStepEditorDialog(
             state = state,
-            onDismiss = { editorState = null },
+            onDismiss = {
+                editorState = null
+                pickingSlot = null
+                imagePickerSlot = null
+            },
             onStateChange = { editorState = it },
+            onPickCoordinate = { slot, currentTarget ->
+                if (!Settings.canDrawOverlays(context)) {
+                    AutoClickApp.showToast("请先开启悬浮窗权限")
+                    openOverlayPermission(context)
+                    return@ActionStepEditorDialog
+                }
+                pickingSlot = slot
+                AutoTaskCoordinatePickerService.show(
+                    context = context,
+                    x = currentTarget.x.takeIf { it > 0 },
+                    y = currentTarget.y.takeIf { it > 0 }
+                )
+                AutoClickApp.showToast("选点悬浮窗已启动，先点开始选择，再到目标页面单击坐标")
+            },
+            onPickImage = { slot ->
+                imagePickerSlot = slot
+                imagePickerLauncher.launch(arrayOf("image/*"))
+            },
             onConfirm = {
                 val current = editorState ?: return@ActionStepEditorDialog
                 val error = validateActionStepEditor(current)
@@ -249,7 +347,8 @@ fun TriggerScreen(onBack: () -> Unit) {
     }
 
     if (showEventPicker) {
-        EventSelectionDialog(
+        TriggerEventPickerDialog(
+            title = "选择触发事件",
             selectedEventTypes = draftTrigger.effectiveEventTypes,
             onDismiss = { showEventPicker = false },
             onConfirm = { selected ->
@@ -268,7 +367,8 @@ fun TriggerScreen(onBack: () -> Unit) {
     }
 
     if (showAppPicker) {
-        AppSelectionDialog(
+        TriggerAppPickerDialog(
+            apps = remember(context) { context.getInstalledAppInfo() },
             selectedApps = draftTrigger.targetApps,
             onDismiss = { showAppPicker = false },
             onConfirm = { apps ->
@@ -349,23 +449,14 @@ private fun TriggerDraftSection(
             label = { Text("触发器名称") },
             singleLine = true
         )
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            SelectFieldButton(
-                label = "目标应用",
-                value = buildTriggerAppSummary(draftTrigger),
-                onClick = onSelectApps,
-                modifier = Modifier.fillMaxWidth()
-            )
-            SelectFieldButton(
-                label = "触发事件",
-                value = buildTriggerEventSummary(draftTrigger.effectiveEventTypes),
-                onClick = onSelectEvents,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
+        TriggerTargetAppSection(
+            draftTrigger = draftTrigger,
+            onSelectApps = onSelectApps
+        )
+        TriggerEventSection(
+            eventTypes = draftTrigger.effectiveEventTypes,
+            onSelectEvents = onSelectEvents
+        )
         OutlinedTextField(
             value = draftTrigger.cooldownMs.toString(),
             onValueChange = {
@@ -404,10 +495,10 @@ private fun TriggerDraftSection(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            Switch(
-                checked = draftTrigger.keywordExact,
-                onCheckedChange = { onDraftChange(draftTrigger.copy(keywordExact = it)) }
-            )
+                Switch(
+                    checked = draftTrigger.keywordExact,
+                    onCheckedChange = { onDraftChange(draftTrigger.copy(keywordExact = it)) }
+                )
             }
         }
         StepList(
@@ -428,32 +519,116 @@ private fun TriggerDraftSection(
 }
 
 @Composable
-private fun SelectFieldButton(
-    label: String,
-    value: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
+private fun TriggerTargetAppSection(
+    draftTrigger: AutoTriggerConfig,
+    onSelectApps: () -> Unit
 ) {
-    OutlinedButton(
-        onClick = onClick,
-        modifier = modifier
-    ) {
-        Column(
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-            horizontalAlignment = Alignment.Start
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = value,
+                text = "目标应用",
                 style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                fontWeight = FontWeight.SemiBold
             )
+            TextButton(onClick = onSelectApps) {
+                Text(if (draftTrigger.targetApps.isEmpty()) "选择应用" else "重新选择")
+            }
+        }
+        Surface(
+            color = MaterialTheme.colorScheme.background,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (draftTrigger.targetApps.isEmpty()) {
+                    Text(
+                        text = "还没有选择目标应用",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        text = "已选择 ${draftTrigger.targetApps.size} 个应用",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        draftTrigger.targetApps.chunked(2).forEach { rowApps ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                rowApps.forEach { app ->
+                                    Box(modifier = Modifier.weight(1f)) {
+                                        TriggerAppInfoRow(
+                                            packageName = app.packageName,
+                                            appLabel = app.appLabel.ifBlank { app.packageName }
+                                        )
+                                    }
+                                }
+                                if (rowApps.size == 1) {
+                                    Box(modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TriggerEventSection(
+    eventTypes: List<AutoTriggerEventType>,
+    onSelectEvents: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "触发事件",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            TextButton(onClick = onSelectEvents) {
+                Text("选择事件")
+            }
+        }
+        Surface(
+            color = MaterialTheme.colorScheme.background,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = buildTriggerEventSummary(eventTypes),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = buildTriggerEventDescription(eventTypes),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
@@ -683,7 +858,8 @@ private fun SavedTriggerRow(
 }
 
 @Composable
-private fun EventSelectionDialog(
+private fun TriggerEventPickerDialog(
+    title: String,
     selectedEventTypes: List<AutoTriggerEventType>,
     onDismiss: () -> Unit,
     onConfirm: (List<AutoTriggerEventType>) -> Unit
@@ -691,161 +867,336 @@ private fun EventSelectionDialog(
     var selectedSet by remember(selectedEventTypes) {
         mutableStateOf(selectedEventTypes.ifEmpty { listOf(AutoTriggerEventType.PAGE_NAVIGATED) }.toSet())
     }
-    AlertDialog(
+    Dialog(
         onDismissRequest = onDismiss,
-        title = { Text("选择触发事件") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 8.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 28.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 AutoTriggerEventType.entries.forEach { eventType ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    val selected = eventType in selectedSet
+                    Surface(
+                        onClick = {
+                            selectedSet = if (selected) selectedSet - eventType else selectedSet + eventType
+                        },
+                        color = if (selected) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Checkbox(
-                            checked = eventType in selectedSet,
-                            onCheckedChange = { checked ->
-                                selectedSet = if (checked) {
-                                    selectedSet + eventType
-                                } else {
-                                    selectedSet - eventType
-                                }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(checked = selected, onCheckedChange = null)
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = eventType.title,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = eventType.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
-                        )
-                        Column {
-                            Text(eventType.title, fontWeight = FontWeight.SemiBold)
-                            Text(
-                                text = eventType.description,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
                         }
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(selectedSet.toList()) }) {
-                Text("确定")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("取消")
+                    }
+                    Button(
+                        onClick = {
+                            onConfirm(selectedSet.ifEmpty { setOf(AutoTriggerEventType.PAGE_NAVIGATED) }.toList())
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("确定")
+                    }
+                }
             }
         }
-    )
+    }
+}
+
+private enum class TriggerAppFilter(val title: String) {
+    ALL("全部应用"),
+    USER("用户应用"),
+    SYSTEM("系统应用")
 }
 
 @Composable
-private fun AppSelectionDialog(
+private fun TriggerAppPickerDialog(
+    apps: List<InstalledAppInfo>,
     selectedApps: List<AutoTriggerApp>,
     onDismiss: () -> Unit,
     onConfirm: (List<AutoTriggerApp>) -> Unit
 ) {
-    val context = LocalContext.current
     var keyword by rememberSaveable { mutableStateOf("") }
-    val allApps = remember(context) { context.getInstalledAppInfo() }
-    var selectedMap by remember(selectedApps) {
-        mutableStateOf(selectedApps.associateBy { it.packageName }.toMutableMap())
+    var filter by remember { mutableStateOf(TriggerAppFilter.USER) }
+    var filterExpanded by remember { mutableStateOf(false) }
+    var selectedPackageSet by remember(selectedApps) {
+        mutableStateOf(selectedApps.map { it.packageName }.filter { it.isNotBlank() }.toSet())
     }
-    val filteredApps = remember(allApps, keyword) {
-        val query = keyword.trim()
-        if (query.isBlank()) {
-            allApps
-        } else {
-            allApps.filter {
-                it.appLabel.contains(query, ignoreCase = true) ||
-                    it.packageName.contains(query, ignoreCase = true)
+    val selectedLabelMap = remember(selectedApps) {
+        selectedApps.associate { it.packageName to it.appLabel }
+    }
+    val filteredApps = remember(apps, keyword, filter, selectedPackageSet) {
+        val trimmed = keyword.trim()
+        apps
+            .filter { app ->
+                when (filter) {
+                    TriggerAppFilter.ALL -> true
+                    TriggerAppFilter.USER -> !app.isSystemApp
+                    TriggerAppFilter.SYSTEM -> app.isSystemApp
+                }
             }
-        }
+            .filter { app ->
+                trimmed.isBlank() ||
+                    app.appLabel.contains(trimmed, ignoreCase = true) ||
+                    app.packageName.contains(trimmed, ignoreCase = true)
+            }
+            .sortedWith(
+                compareByDescending<InstalledAppInfo> { it.packageName in selectedPackageSet }
+                    .thenBy { it.appLabel.lowercase() }
+                    .thenBy { it.packageName }
+            )
     }
+    val allFilteredSelected = filteredApps.isNotEmpty() &&
+        filteredApps.all { it.packageName in selectedPackageSet }
 
-    AlertDialog(
+    Dialog(
         onDismissRequest = onDismiss,
-        title = { Text("选择目标应用") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 8.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 28.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "选择应用",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Box {
+                        OutlinedButton(onClick = { filterExpanded = true }) {
+                            Text(filter.title)
+                        }
+                        DropdownMenu(
+                            expanded = filterExpanded,
+                            onDismissRequest = { filterExpanded = false }
+                        ) {
+                            TriggerAppFilter.entries.forEach { item ->
+                                DropdownMenuItem(
+                                    text = { Text(item.title) },
+                                    onClick = {
+                                        filter = item
+                                        filterExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = keyword,
                     onValueChange = { keyword = it },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("搜索应用") },
+                    placeholder = { Text("输入应用名或包名") },
                     singleLine = true
                 )
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 360.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
                 ) {
-                    items(filteredApps, key = { it.packageName }) { app ->
-                        AppSelectionRow(
-                            app = app,
-                            checked = selectedMap.containsKey(app.packageName),
-                            onCheckedChange = { checked ->
-                                selectedMap = selectedMap.toMutableMap().apply {
-                                    if (checked) {
-                                        put(
-                                            app.packageName,
-                                            AutoTriggerApp(
-                                                packageName = app.packageName,
-                                                appLabel = app.appLabel
-                                            )
-                                        )
+                    if (filteredApps.isEmpty()) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.background,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "没有找到匹配的应用",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
+                    } else {
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(filteredApps, key = { it.packageName }) { app ->
+                                val selected = app.packageName in selectedPackageSet
+                                Surface(
+                                    onClick = {
+                                        selectedPackageSet = if (selected) {
+                                            selectedPackageSet - app.packageName
+                                        } else {
+                                            selectedPackageSet + app.packageName
+                                        }
+                                    },
+                                    color = if (selected) {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
                                     } else {
-                                        remove(app.packageName)
+                                        MaterialTheme.colorScheme.background
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Checkbox(checked = selected, onCheckedChange = null)
+                                        TriggerAppIcon(packageName = app.packageName)
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Text(
+                                                text = app.appLabel,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = if (app.isSystemApp) "系统应用" else "用户应用",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.Start,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = allFilteredSelected,
+                            onCheckedChange = { checked ->
+                                selectedPackageSet = if (checked) {
+                                    selectedPackageSet + filteredApps.map { it.packageName }
+                                } else {
+                                    selectedPackageSet - filteredApps.map { it.packageName }.toSet()
+                                }
+                            }
                         )
+                        Text("全选", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("取消")
+                    }
+                    Button(
+                        onClick = {
+                            val selectedResult = apps
+                                .filter { it.packageName in selectedPackageSet }
+                                .map {
+                                    AutoTriggerApp(
+                                        packageName = it.packageName,
+                                        appLabel = selectedLabelMap[it.packageName].orEmpty()
+                                            .ifBlank { it.appLabel }
+                                    )
+                                }
+                            onConfirm(selectedResult)
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("确定")
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(selectedMap.values.toList()) }) {
-                Text("确定")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
         }
-    )
+    }
 }
 
 @Composable
-private fun AppSelectionRow(
-    app: InstalledAppInfo,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+private fun TriggerAppInfoRow(
+    packageName: String,
+    appLabel: String
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-        shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.fillMaxWidth()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Checkbox(
-                checked = checked,
-                onCheckedChange = onCheckedChange
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(app.appLabel, fontWeight = FontWeight.SemiBold)
-                Text(
-                    text = if (app.isSystemApp) "${app.packageName} · 系统应用" else app.packageName,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
+        TriggerAppIcon(packageName = packageName)
+        Text(
+            text = appLabel,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
     }
+}
+
+@Composable
+private fun TriggerAppIcon(packageName: String) {
+    val context = LocalContext.current
+    AndroidView(
+        factory = { viewContext ->
+            ImageView(viewContext).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+        },
+        update = { imageView -> imageView.setImageDrawable(context.getAppIcon(packageName)) },
+        modifier = Modifier.size(30.dp)
+    )
 }
 
 @Composable
@@ -910,12 +1261,23 @@ private fun buildTargetSummary(target: AutoTaskTarget?): String {
     return when (target.type) {
         AutoTaskTargetType.COORDINATE -> "坐标(${target.x}, ${target.y})"
         AutoTaskTargetType.NODE_TEXT -> "文字“${target.text}”第${target.index}个"
+        AutoTaskTargetType.OCR_TEXT -> "OCR“${target.text}”第${target.index}个"
+        AutoTaskTargetType.IMAGE -> if (target.imageUri.isBlank()) "图片未选择" else "图片识别"
     }
 }
 
 private fun buildTriggerEventSummary(eventTypes: List<AutoTriggerEventType>): String {
-    return eventTypes.ifEmpty { listOf(AutoTriggerEventType.PAGE_NAVIGATED) }
-        .joinToString("、") { it.title }
+    if (eventTypes.isEmpty()) return "还没有选择触发事件"
+    return if (eventTypes.size == 1) {
+        eventTypes.first().title
+    } else {
+        "${eventTypes.first().title} 等 ${eventTypes.size} 个事件"
+    }
+}
+
+private fun buildTriggerEventDescription(eventTypes: List<AutoTriggerEventType>): String {
+    if (eventTypes.isEmpty()) return "命中任一已选事件时，都会执行这个触发器。"
+    return eventTypes.joinToString("、") { it.description }
 }
 
 private fun buildTriggerAppSummary(trigger: AutoTriggerConfig): String {

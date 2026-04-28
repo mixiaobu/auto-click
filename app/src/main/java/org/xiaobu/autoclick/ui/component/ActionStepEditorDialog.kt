@@ -1,23 +1,28 @@
 package org.xiaobu.autoclick.ui.component
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material3.Button
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -35,6 +41,16 @@ import org.xiaobu.autoclick.data.task.AutoTaskActionType
 import org.xiaobu.autoclick.data.task.AutoTaskStep
 import org.xiaobu.autoclick.data.task.AutoTaskTarget
 import org.xiaobu.autoclick.data.task.AutoTaskTargetType
+
+enum class ActionStepCoordinateSlot {
+    TARGET,
+    SECONDARY
+}
+
+enum class ActionStepTargetPickerSlot {
+    TARGET,
+    SECONDARY
+}
 
 data class ActionStepEditorState(
     val stepId: String? = null,
@@ -54,8 +70,12 @@ data class ActionStepEditorState(
                 ?: defaultActionDurationMs(actionType),
             delayAfterMs = delayAfterMsText.toLongOrNull()?.coerceAtLeast(0L)
                 ?: defaultActionDelayAfterMs(actionType),
-            target = if (actionType.requiresTarget) target.normalize() else null,
-            secondaryTarget = if (actionType.requiresSecondaryTarget) secondaryTarget.normalize() else null
+            target = if (actionType.requiresTarget) target.normalizeForEditor() else null,
+            secondaryTarget = if (actionType.requiresSecondaryTarget) {
+                secondaryTarget.normalizeForEditor()
+            } else {
+                null
+            }
         )
     }
 
@@ -82,10 +102,10 @@ fun validateActionStepEditor(state: ActionStepEditorState): String? {
     if (delayAfterMs == null || delayAfterMs < 0L) return "后续延迟不能小于 0"
 
     if (state.actionType.requiresTarget) {
-        validateTarget(state.target, "执行目标")?.let { return it }
+        validateEditorTarget(state.target, "执行目标")?.let { return it }
     }
     if (state.actionType.requiresSecondaryTarget) {
-        validateTarget(state.secondaryTarget, "结束目标")?.let { return it }
+        validateEditorTarget(state.secondaryTarget, "结束目标")?.let { return it }
     }
     return null
 }
@@ -95,19 +115,24 @@ fun ActionStepEditorDialog(
     state: ActionStepEditorState,
     onDismiss: () -> Unit,
     onStateChange: (ActionStepEditorState) -> Unit,
+    onPickCoordinate: (ActionStepCoordinateSlot, AutoTaskTarget) -> Unit,
+    onPickImage: (ActionStepTargetPickerSlot) -> Unit,
     onConfirm: () -> Unit
 ) {
+    var showActionDialog by remember { mutableStateOf(false) }
+    var targetTypeSlot by remember { mutableStateOf<ActionStepTargetPickerSlot?>(null) }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
             color = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(20.dp),
             shadowElevation = 8.dp,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 28.dp)
+                .padding(horizontal = 20.dp, vertical = 28.dp)
         ) {
             Column(
                 modifier = Modifier
@@ -120,18 +145,12 @@ fun ActionStepEditorDialog(
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold
                 )
-                ActionTypePicker(
-                    actionType = state.actionType,
-                    onActionTypeChange = { actionType ->
-                        onStateChange(
-                            state.copy(
-                                actionType = actionType,
-                                durationMsText = defaultActionDurationMs(actionType).toString(),
-                                delayAfterMsText = defaultActionDelayAfterMs(actionType).toString()
-                            )
-                        )
-                    }
-                )
+                OutlinedButton(
+                    onClick = { showActionDialog = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("动作：${state.actionType.title}")
+                }
                 OutlinedTextField(
                     value = state.title,
                     onValueChange = { onStateChange(state.copy(title = it)) },
@@ -165,17 +184,27 @@ fun ActionStepEditorDialog(
                     )
                 }
                 if (state.actionType.requiresTarget) {
-                    TargetEditor(
+                    ActionStepTargetEditor(
                         title = "执行目标",
                         target = state.target,
-                        onTargetChange = { onStateChange(state.copy(target = it)) }
+                        onTargetChange = { onStateChange(state.copy(target = it)) },
+                        onSelectTargetType = { targetTypeSlot = ActionStepTargetPickerSlot.TARGET },
+                        onPickCoordinate = {
+                            onPickCoordinate(ActionStepCoordinateSlot.TARGET, state.target)
+                        },
+                        onPickImage = { onPickImage(ActionStepTargetPickerSlot.TARGET) }
                     )
                 }
                 if (state.actionType.requiresSecondaryTarget) {
-                    TargetEditor(
+                    ActionStepTargetEditor(
                         title = "结束目标",
                         target = state.secondaryTarget,
-                        onTargetChange = { onStateChange(state.copy(secondaryTarget = it)) }
+                        onTargetChange = { onStateChange(state.copy(secondaryTarget = it)) },
+                        onSelectTargetType = { targetTypeSlot = ActionStepTargetPickerSlot.SECONDARY },
+                        onPickCoordinate = {
+                            onPickCoordinate(ActionStepCoordinateSlot.SECONDARY, state.secondaryTarget)
+                        },
+                        onPickImage = { onPickImage(ActionStepTargetPickerSlot.SECONDARY) }
                     )
                 }
                 Row(
@@ -198,43 +227,59 @@ fun ActionStepEditorDialog(
             }
         }
     }
-}
 
-@Composable
-private fun ActionTypePicker(
-    actionType: AutoTaskActionType,
-    onActionTypeChange: (AutoTaskActionType) -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        OutlinedButton(
-            onClick = { expanded = true },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("动作：${actionType.title}")
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            AutoTaskActionType.entries.forEach { item ->
-                DropdownMenuItem(
-                    text = { Text(item.title) },
-                    onClick = {
-                        expanded = false
-                        onActionTypeChange(item)
-                    }
+    if (showActionDialog) {
+        ActionStepSelectionDialog(
+            title = "选择动作",
+            options = AutoTaskActionType.entries.map { it.title },
+            selectedIndex = AutoTaskActionType.entries.indexOf(state.actionType),
+            onDismiss = { showActionDialog = false },
+            onSelect = { index ->
+                val actionType = AutoTaskActionType.entries[index]
+                onStateChange(
+                    state.copy(
+                        actionType = actionType,
+                        durationMsText = defaultActionDurationMs(actionType).toString(),
+                        delayAfterMsText = defaultActionDelayAfterMs(actionType).toString()
+                    )
                 )
+                showActionDialog = false
             }
+        )
+    }
+
+    targetTypeSlot?.let { slot ->
+        val currentTarget = if (slot == ActionStepTargetPickerSlot.TARGET) {
+            state.target
+        } else {
+            state.secondaryTarget
         }
+        ActionStepSelectionDialog(
+            title = "选择目标类型",
+            options = AutoTaskTargetType.entries.map { it.title },
+            selectedIndex = AutoTaskTargetType.entries.indexOf(currentTarget.type),
+            onDismiss = { targetTypeSlot = null },
+            onSelect = { index ->
+                val updatedTarget = currentTarget.copy(type = AutoTaskTargetType.entries[index])
+                if (slot == ActionStepTargetPickerSlot.TARGET) {
+                    onStateChange(state.copy(target = updatedTarget))
+                } else {
+                    onStateChange(state.copy(secondaryTarget = updatedTarget))
+                }
+                targetTypeSlot = null
+            }
+        )
     }
 }
 
 @Composable
-private fun TargetEditor(
+private fun ActionStepTargetEditor(
     title: String,
     target: AutoTaskTarget,
-    onTargetChange: (AutoTaskTarget) -> Unit
+    onTargetChange: (AutoTaskTarget) -> Unit,
+    onSelectTargetType: () -> Unit,
+    onPickCoordinate: () -> Unit,
+    onPickImage: () -> Unit
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
@@ -242,7 +287,9 @@ private fun TargetEditor(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
@@ -255,143 +302,206 @@ private fun TargetEditor(
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold
                 )
-                TargetTypePicker(
-                    targetType = target.type,
-                    onTargetTypeChange = { onTargetChange(target.copy(type = it)) }
-                )
+                OutlinedButton(onClick = onSelectTargetType) {
+                    Text(target.type.title)
+                }
             }
+
             when (target.type) {
-                AutoTaskTargetType.COORDINATE -> CoordinateTargetEditor(
-                    target = target,
-                    onTargetChange = onTargetChange
-                )
-
-                AutoTaskTargetType.NODE_TEXT -> TextTargetEditor(
-                    target = target,
-                    onTargetChange = onTargetChange
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun TargetTypePicker(
-    targetType: AutoTaskTargetType,
-    onTargetTypeChange: (AutoTaskTargetType) -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    OutlinedButton(onClick = { expanded = true }) {
-        Text(targetType.title)
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            AutoTaskTargetType.entries.forEach { item ->
-                DropdownMenuItem(
-                    text = { Text(item.title) },
-                    onClick = {
-                        expanded = false
-                        onTargetTypeChange(item)
+                AutoTaskTargetType.COORDINATE -> {
+                    OutlinedButton(
+                        onClick = onPickCoordinate,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Place,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = if (target.x > 0 || target.y > 0) {
+                                "启动选点悬浮窗 (${target.x}, ${target.y})"
+                            } else {
+                                "启动选点悬浮窗"
+                            },
+                            modifier = Modifier.padding(start = 6.dp)
+                        )
                     }
-                )
+                    Text(
+                        text = "先打开悬浮选点，再到目标页面单击记录坐标。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                AutoTaskTargetType.NODE_TEXT,
+                AutoTaskTargetType.OCR_TEXT -> {
+                    OutlinedTextField(
+                        value = target.text,
+                        onValueChange = { onTargetChange(target.copy(text = it)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = {
+                            Text(if (target.type == AutoTaskTargetType.NODE_TEXT) "目标文字" else "OCR 文字")
+                        },
+                        singleLine = true
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(
+                            value = target.index.toString(),
+                            onValueChange = {
+                                onTargetChange(
+                                    target.copy(index = it.filter(Char::isDigit).toIntOrNull() ?: 1)
+                                )
+                            },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("第几个") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true
+                        )
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("精确匹配", style = MaterialTheme.typography.bodyMedium)
+                                Switch(
+                                    checked = target.exact,
+                                    onCheckedChange = { onTargetChange(target.copy(exact = it)) }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                AutoTaskTargetType.IMAGE -> {
+                    OutlinedButton(
+                        onClick = onPickImage,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Image,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = if (target.imageUri.isBlank()) "选择图片" else "更换图片",
+                            modifier = Modifier.padding(start = 6.dp)
+                        )
+                    }
+                    if (target.imageUri.isNotBlank()) {
+                        Text(
+                            text = "已选择：${buildEditorTargetSummary(target)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun CoordinateTargetEditor(
-    target: AutoTaskTarget,
-    onTargetChange: (AutoTaskTarget) -> Unit
+private fun ActionStepSelectionDialog(
+    title: String,
+    options: List<String>,
+    selectedIndex: Int,
+    onDismiss: () -> Unit,
+    onSelect: (Int) -> Unit
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedTextField(
-            value = target.x.toString(),
-            onValueChange = {
-                onTargetChange(target.copy(x = it.filter(Char::isDigit).toIntOrNull() ?: 0))
-            },
-            modifier = Modifier.weight(1f),
-            label = { Text("X") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            singleLine = true
-        )
-        OutlinedTextField(
-            value = target.y.toString(),
-            onValueChange = {
-                onTargetChange(target.copy(y = it.filter(Char::isDigit).toIntOrNull() ?: 0))
-            },
-            modifier = Modifier.weight(1f),
-            label = { Text("Y") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            singleLine = true
-        )
-    }
-}
-
-@Composable
-private fun TextTargetEditor(
-    target: AutoTaskTarget,
-    onTargetChange: (AutoTaskTarget) -> Unit
-) {
-    OutlinedTextField(
-        value = target.text,
-        onValueChange = { onTargetChange(target.copy(text = it)) },
-        modifier = Modifier.fillMaxWidth(),
-        label = { Text("目标文字") },
-        singleLine = true
-    )
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedTextField(
-            value = target.index.toString(),
-            onValueChange = {
-                onTargetChange(target.copy(index = it.filter(Char::isDigit).toIntOrNull() ?: 1))
-            },
-            modifier = Modifier.weight(1f),
-            label = { Text("第几个") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            singleLine = true
-        )
+    Dialog(onDismissRequest = onDismiss) {
         Surface(
             color = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(10.dp),
-            modifier = Modifier.weight(1f)
+            shape = RoundedCornerShape(18.dp),
+            shadowElevation = 8.dp,
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text("精确匹配", style = MaterialTheme.typography.bodyMedium)
-                Switch(
-                    checked = target.exact,
-                    onCheckedChange = { onTargetChange(target.copy(exact = it)) }
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
                 )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    options.forEachIndexed { index, option ->
+                        Surface(
+                            onClick = { onSelect(index) },
+                            color = if (index == selectedIndex) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                            } else {
+                                MaterialTheme.colorScheme.surface
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = option,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                                color = if (index == selectedIndex) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                }
+                            )
+                        }
+                    }
+                }
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("关闭")
+                }
             }
         }
     }
 }
 
-private fun validateTarget(target: AutoTaskTarget, title: String): String? {
+private fun validateEditorTarget(target: AutoTaskTarget, title: String): String? {
     return when (target.type) {
         AutoTaskTargetType.COORDINATE -> {
-            if (target.x <= 0 && target.y <= 0) "${title}还没有填写坐标" else null
+            if (target.x <= 0 && target.y <= 0) "${title}还没有选择坐标" else null
         }
 
-        AutoTaskTargetType.NODE_TEXT -> when {
-            target.text.isBlank() -> "请输入${title}文字"
+        AutoTaskTargetType.NODE_TEXT,
+        AutoTaskTargetType.OCR_TEXT -> when {
+            target.text.isBlank() -> "请输入${title}的文字"
             target.index < 1 -> "${title}的第几个必须大于 0"
             else -> null
         }
+
+        AutoTaskTargetType.IMAGE -> {
+            if (target.imageUri.isBlank()) "请选择${title}的图片" else null
+        }
     }
 }
 
-private fun AutoTaskTarget.normalize(): AutoTaskTarget {
+private fun buildEditorTargetSummary(target: AutoTaskTarget): String {
+    return when (target.type) {
+        AutoTaskTargetType.COORDINATE -> "坐标(${target.x}, ${target.y})"
+        AutoTaskTargetType.NODE_TEXT -> "文字“${target.text}”第${target.index}个"
+        AutoTaskTargetType.OCR_TEXT -> "OCR“${target.text}”第${target.index}个"
+        AutoTaskTargetType.IMAGE -> "图片识别"
+    }
+}
+
+private fun AutoTaskTarget.normalizeForEditor(): AutoTaskTarget {
     return copy(
         text = text.trim(),
-        index = index.coerceAtLeast(1)
+        index = index.coerceAtLeast(1),
+        imageUri = imageUri.trim()
     )
 }
 
