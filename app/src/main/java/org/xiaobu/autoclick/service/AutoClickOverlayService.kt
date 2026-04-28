@@ -103,6 +103,7 @@ class AutoClickOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwn
     private var quickControlParams: WindowManager.LayoutParams? = null
     private var clickJob: Job? = null
     private var addingPointId: String? = null
+    private var completedClickCount = 0
     private var panelStatusText by mutableStateOf("悬浮控制器已就绪")
     private var panelClicking by mutableStateOf(false)
     private var panelAddingMode by mutableStateOf(false)
@@ -191,6 +192,9 @@ class AutoClickOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwn
             )
             pointerOverlays[point.id] = pointerOverlay
             runCatching { windowManager.addView(pointerOverlay.view, pointerOverlay.params) }
+        }
+        if (clicking) {
+            setPointerTouchable(false)
         }
         overlayVisible = pointerOverlays.isNotEmpty() || panelView != null
     }
@@ -390,6 +394,7 @@ class AutoClickOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwn
         clickJob = serviceScope.launch {
             val startTime = SystemClock.elapsedRealtime()
             var pointerIndex = 0
+            completedClickCount = 0
             while (clicking) {
                 val config = app.autoClickStore.getConfig()
                 val points = config.points
@@ -399,18 +404,34 @@ class AutoClickOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwn
                 }
                 val intervalMs = config.intervalMillis.coerceAtLeast(50).toLong()
                 val durationMs = config.durationSeconds.toLong().coerceAtLeast(0L) * 1000L
+                val maxClickCount = config.maxClickCount.coerceAtLeast(0)
+                if (maxClickCount > 0 && completedClickCount >= maxClickCount) {
+                    break
+                }
+                val elapsedBeforeTap = SystemClock.elapsedRealtime() - startTime
+                if (durationMs > 0L && elapsedBeforeTap >= durationMs) {
+                    break
+                }
                 val point = points[pointerIndex % points.size]
                 val tapPoint = resolveTapPoint(point)
-                val success = AutoClickAccessibilityService.dispatchTap(tapPoint.x, tapPoint.y)
+                val success = AutoClickAccessibilityService.dispatchTapAwait(tapPoint.x, tapPoint.y)
                 if (!success) {
                     AutoClickApp.showToast("点击失败，请检查无障碍服务")
                     break
                 }
                 pointerIndex++
-                if (durationMs > 0L && SystemClock.elapsedRealtime() - startTime >= durationMs) {
+                completedClickCount++
+                updatePanelState()
+                if (maxClickCount > 0 && completedClickCount >= maxClickCount) {
                     break
                 }
-                delay(intervalMs)
+                if (durationMs > 0L) {
+                    val remainingMs = durationMs - (SystemClock.elapsedRealtime() - startTime)
+                    if (remainingMs <= 0L) break
+                    delay(minOf(intervalMs, remainingMs))
+                } else {
+                    delay(intervalMs)
+                }
             }
             clicking = false
             setPointerTouchable(true)
@@ -423,6 +444,7 @@ class AutoClickOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwn
         clickJob?.cancel()
         clickJob = null
         clicking = false
+        completedClickCount = 0
         setPointerTouchable(true)
         syncPanelInteractionState()
         updatePanelState()
@@ -444,6 +466,9 @@ class AutoClickOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwn
                 } else {
                     append(" · 持续点击")
                 }
+                if (config.maxClickCount > 0) {
+                    append(" · $completedClickCount/${config.maxClickCount} 次")
+                }
             }
             pointCount == 0 -> "先添加第一个指针，再开始连点"
             else -> "可以继续添加指针，确认位置后点击开始"
@@ -461,6 +486,7 @@ class AutoClickOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwn
         addingPointId = null
         overlayVisible = false
         panelStatusText = "悬浮控制器已就绪"
+        completedClickCount = 0
         panelClicking = false
         panelAddingMode = false
     }

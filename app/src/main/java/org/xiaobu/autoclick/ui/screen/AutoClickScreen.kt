@@ -24,6 +24,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Stop
@@ -80,6 +82,7 @@ fun AutoClickScreen(onBack: (() -> Unit)? = null) {
     val lifecycleOwner = LocalLifecycleOwner.current
     var intervalText by rememberSaveable { mutableStateOf(store.getConfig().intervalMillis.toString()) }
     var durationText by rememberSaveable { mutableStateOf(store.getConfig().durationSeconds.toString()) }
+    var maxClickCountText by rememberSaveable { mutableStateOf(store.getConfig().maxClickCount.toString()) }
     var presetNameText by rememberSaveable { mutableStateOf("") }
     var points by remember { mutableStateOf(emptyList<AutoClickPointConfig>()) }
     var presets by remember { mutableStateOf(emptyList<AutoClickPresetConfig>()) }
@@ -91,6 +94,7 @@ fun AutoClickScreen(onBack: (() -> Unit)? = null) {
         if (syncInputs) {
             intervalText = config.intervalMillis.toString()
             durationText = config.durationSeconds.toString()
+            maxClickCountText = config.maxClickCount.toString()
         }
         points = config.points
         presets = store.getPresets()
@@ -99,11 +103,18 @@ fun AutoClickScreen(onBack: (() -> Unit)? = null) {
     }
 
     fun saveConfig(saveAsPreset: Boolean, showToast: Boolean): AutoClickConfig {
+        if (saveAsPreset && AutoClickOverlayService.isClicking()) {
+            AutoClickApp.showToast("请先停止连点再保存配置")
+            refreshStatus()
+            return store.getConfig()
+        }
         val intervalMillis = intervalText.toIntOrNull()?.coerceIn(50, 60_000) ?: 100
         val durationSeconds = durationText.toIntOrNull()?.coerceIn(0, 24 * 60 * 60) ?: 0
+        val maxClickCount = maxClickCountText.toIntOrNull()?.coerceIn(0, 1_000_000) ?: 0
         val config = store.getConfig().copy(
             intervalMillis = intervalMillis,
-            durationSeconds = durationSeconds
+            durationSeconds = durationSeconds,
+            maxClickCount = maxClickCount
         )
         store.saveConfig(config)
         if (saveAsPreset) {
@@ -111,6 +122,7 @@ fun AutoClickScreen(onBack: (() -> Unit)? = null) {
         }
         intervalText = intervalMillis.toString()
         durationText = durationSeconds.toString()
+        maxClickCountText = maxClickCount.toString()
         if (showToast) {
             AutoClickApp.showToast(if (saveAsPreset) "配置已保存" else "参数已保存")
         }
@@ -119,6 +131,11 @@ fun AutoClickScreen(onBack: (() -> Unit)? = null) {
     }
 
     fun applyPreset(preset: AutoClickPresetConfig) {
+        if (AutoClickOverlayService.isClicking()) {
+            AutoClickApp.showToast("请先停止连点再加载配置")
+            refreshStatus()
+            return
+        }
         if (!Settings.canDrawOverlays(context) || !AutoClickAccessibilityService.isServiceEnabled(context)) {
             AutoClickApp.showToast("请先完成悬浮窗和无障碍授权")
             refreshStatus()
@@ -128,6 +145,7 @@ fun AutoClickScreen(onBack: (() -> Unit)? = null) {
         presetNameText = preset.name
         intervalText = preset.config.intervalMillis.toString()
         durationText = preset.config.durationSeconds.toString()
+        maxClickCountText = preset.config.maxClickCount.toString()
         if (overlayVisible) {
             AutoClickOverlayService.refresh(context)
         }
@@ -181,16 +199,23 @@ fun AutoClickScreen(onBack: (() -> Unit)? = null) {
             clicking = clicking,
             intervalText = intervalText,
             durationText = durationText,
+            maxClickCountText = maxClickCountText,
             presetNameText = presetNameText,
             points = points,
             presets = presets,
             onIntervalChange = { intervalText = it.filter(Char::isDigit) },
             onDurationChange = { durationText = it.filter(Char::isDigit) },
+            onMaxClickCountChange = { maxClickCountText = it.filter(Char::isDigit) },
             onPresetNameChange = { presetNameText = it },
             onCreateNew = {
-                store.saveConfig(AutoClickConfig())
-                presetNameText = ""
-                refreshStatus(syncInputs = true)
+                if (AutoClickOverlayService.isClicking()) {
+                    AutoClickApp.showToast("请先停止连点再新建配置")
+                    refreshStatus()
+                } else {
+                    store.saveConfig(AutoClickConfig())
+                    presetNameText = ""
+                    refreshStatus(syncInputs = true)
+                }
             },
             onSave = { saveConfig(saveAsPreset = true, showToast = true) },
             onApplyPreset = ::applyPreset,
@@ -205,6 +230,18 @@ fun AutoClickScreen(onBack: (() -> Unit)? = null) {
                 store.deletePreset(preset.id)
                 refreshStatus()
                 AutoClickApp.showToast("配置已删除")
+            },
+            onMovePoint = { point, targetIndex ->
+                if (AutoClickOverlayService.isClicking()) {
+                    AutoClickApp.showToast("请先停止连点再调整顺序")
+                    refreshStatus()
+                } else {
+                    store.movePoint(point.id, targetIndex)
+                    if (overlayVisible) {
+                        AutoClickOverlayService.refresh(context)
+                    }
+                    refreshStatus()
+                }
             },
             onStart = {
                 saveConfig(saveAsPreset = false, showToast = false)
@@ -230,11 +267,13 @@ private fun AutoClickContent(
     clicking: Boolean,
     intervalText: String,
     durationText: String,
+    maxClickCountText: String,
     presetNameText: String,
     points: List<AutoClickPointConfig>,
     presets: List<AutoClickPresetConfig>,
     onIntervalChange: (String) -> Unit,
     onDurationChange: (String) -> Unit,
+    onMaxClickCountChange: (String) -> Unit,
     onPresetNameChange: (String) -> Unit,
     onCreateNew: () -> Unit,
     onSave: () -> Unit,
@@ -243,6 +282,7 @@ private fun AutoClickContent(
     onExportPreset: (AutoClickPresetConfig) -> String,
     onDecodePreset: (String) -> AutoClickPresetConfig?,
     onDeletePreset: (AutoClickPresetConfig) -> Unit,
+    onMovePoint: (AutoClickPointConfig, Int) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit
 ) {
@@ -299,13 +339,16 @@ private fun AutoClickContent(
         CurrentConfigSection(
             intervalText = intervalText,
             durationText = durationText,
+            maxClickCountText = maxClickCountText,
             presetNameText = presetNameText,
             points = points,
             onIntervalChange = onIntervalChange,
             onDurationChange = onDurationChange,
+            onMaxClickCountChange = onMaxClickCountChange,
             onPresetNameChange = onPresetNameChange,
             onCreateNew = onCreateNew,
-            onSave = onSave
+            onSave = onSave,
+            onMovePoint = onMovePoint
         )
         PresetSection(
             presets = presets,
@@ -424,13 +467,16 @@ private fun StatusChip(
 private fun CurrentConfigSection(
     intervalText: String,
     durationText: String,
+    maxClickCountText: String,
     presetNameText: String,
     points: List<AutoClickPointConfig>,
     onIntervalChange: (String) -> Unit,
     onDurationChange: (String) -> Unit,
+    onMaxClickCountChange: (String) -> Unit,
     onPresetNameChange: (String) -> Unit,
     onCreateNew: () -> Unit,
-    onSave: () -> Unit
+    onSave: () -> Unit,
+    onMovePoint: (AutoClickPointConfig, Int) -> Unit
 ) {
     SectionSurface {
         Row(
@@ -476,10 +522,20 @@ private fun CurrentConfigSection(
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
         )
+        OutlinedTextField(
+            value = maxClickCountText,
+            onValueChange = onMaxClickCountChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("点击次数（0 为不限）") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
         ConfigSummary(
             intervalMillis = intervalText.toIntOrNull() ?: 100,
             durationSeconds = durationText.toIntOrNull() ?: 0,
-            points = points
+            maxClickCount = maxClickCountText.toIntOrNull() ?: 0,
+            points = points,
+            onMovePoint = onMovePoint
         )
         Button(
             onClick = onSave,
@@ -500,7 +556,9 @@ private fun CurrentConfigSection(
 private fun ConfigSummary(
     intervalMillis: Int,
     durationSeconds: Int,
-    points: List<AutoClickPointConfig>
+    maxClickCount: Int,
+    points: List<AutoClickPointConfig>,
+    onMovePoint: (AutoClickPointConfig, Int) -> Unit
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
@@ -526,6 +584,11 @@ private fun ConfigSummary(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Text(
+                text = "点击次数：${formatClickCount(maxClickCount)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
     if (points.isEmpty()) {
@@ -537,14 +600,28 @@ private fun ConfigSummary(
     } else {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             points.forEachIndexed { index, point ->
-                PointRow(index = index, point = point)
+                PointRow(
+                    index = index,
+                    point = point,
+                    canMoveUp = index > 0,
+                    canMoveDown = index < points.lastIndex,
+                    onMoveUp = { onMovePoint(point, index - 1) },
+                    onMoveDown = { onMovePoint(point, index + 1) }
+                )
             }
         }
     }
 }
 
 @Composable
-private fun PointRow(index: Int, point: AutoClickPointConfig) {
+private fun PointRow(
+    index: Int,
+    point: AutoClickPointConfig,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -572,7 +649,10 @@ private fun PointRow(index: Int, point: AutoClickPointConfig) {
                 fontWeight = FontWeight.Bold
             )
         }
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
             Text(
                 text = "指针 ${index + 1}",
                 style = MaterialTheme.typography.bodyMedium,
@@ -583,6 +663,30 @@ private fun PointRow(index: Int, point: AutoClickPointConfig) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            IconButton(
+                onClick = onMoveUp,
+                enabled = canMoveUp,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.KeyboardArrowUp,
+                    contentDescription = "上移",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            IconButton(
+                onClick = onMoveDown,
+                enabled = canMoveDown,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.KeyboardArrowDown,
+                    contentDescription = "下移",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
     }
 }
@@ -684,6 +788,7 @@ private fun PresetRow(
             ) {
                 MetaTag(text = formatInterval(preset.config.intervalMillis))
                 MetaTag(text = formatDuration(preset.config.durationSeconds))
+                MetaTag(text = formatClickCount(preset.config.maxClickCount))
                 MetaTag(text = "${preset.config.points.size} 个指针")
             }
             Row(
@@ -742,6 +847,10 @@ private fun SectionSurface(content: @Composable ColumnScope.() -> Unit) {
 
 private fun formatDuration(durationSeconds: Int): String {
     return if (durationSeconds <= 0) "持续点击" else "$durationSeconds 秒"
+}
+
+private fun formatClickCount(maxClickCount: Int): String {
+    return if (maxClickCount <= 0) "不限次数" else "$maxClickCount 次"
 }
 
 private fun formatInterval(intervalMillis: Int): String {

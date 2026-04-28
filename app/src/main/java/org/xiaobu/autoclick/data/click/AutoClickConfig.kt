@@ -9,6 +9,7 @@ data class AutoClickPointConfig(
 data class AutoClickConfig(
     val intervalMillis: Int = 100,
     val durationSeconds: Int = 0,
+    val maxClickCount: Int = 0,
     val points: List<AutoClickPointConfig> = emptyList()
 )
 

@@ -62,6 +62,19 @@ class AutoClickStore(context: Context) {
         saveConfig(config.copy(points = config.points.filterNot { it.id == pointId }))
     }
 
+    fun movePoint(pointId: String, targetIndex: Int) {
+        if (pointId.isBlank()) return
+        val config = getConfig()
+        val points = config.points.toMutableList()
+        val currentIndex = points.indexOfFirst { it.id == pointId }
+        if (currentIndex == -1) return
+        val safeTargetIndex = targetIndex.coerceIn(0, points.lastIndex)
+        if (currentIndex == safeTargetIndex) return
+        val point = points.removeAt(currentIndex)
+        points.add(safeTargetIndex, point)
+        saveConfig(config.copy(points = points))
+    }
+
     fun getPresets(): List<AutoClickPresetConfig> {
         val rawPresets = preferences.getString(PRESET_KEY, null).orEmpty()
         if (rawPresets.isBlank()) return emptyList()
@@ -91,6 +104,7 @@ class AutoClickStore(context: Context) {
                 val itemPoints = item.config.points.map { it.x to it.y }
                 val sameConfig = item.config.intervalMillis == sanitizedConfig.intervalMillis &&
                     item.config.durationSeconds == sanitizedConfig.durationSeconds &&
+                    item.config.maxClickCount == sanitizedConfig.maxClickCount &&
                     itemPoints == configPoints
                 if (!sameConfig) add(item)
             }
@@ -109,11 +123,16 @@ class AutoClickStore(context: Context) {
     }
 
     fun encodePreset(preset: AutoClickPresetConfig): String {
-        return sanitizePreset(preset).toJson()
+        return AutoClickPresetExportPayload(
+            exportedAtMillis = System.currentTimeMillis(),
+            preset = sanitizePreset(preset)
+        ).toJson()
     }
 
     fun decodePreset(rawJson: String): AutoClickPresetConfig? {
-        return rawJson.fromJson<AutoClickPresetConfig>()?.let(::sanitizePreset)
+        val payload = rawJson.fromJson<AutoClickPresetExportPayload>() ?: return null
+        if (payload.format != EXPORT_FORMAT || payload.version != EXPORT_VERSION) return null
+        return sanitizePreset(payload.preset)
     }
 
     private fun sanitizePreset(preset: AutoClickPresetConfig): AutoClickPresetConfig {
@@ -129,6 +148,7 @@ class AutoClickStore(context: Context) {
         return copy(
             intervalMillis = intervalMillis.coerceIn(MIN_INTERVAL_MS, MAX_INTERVAL_MS),
             durationSeconds = durationSeconds.coerceIn(0, MAX_DURATION_SECONDS),
+            maxClickCount = maxClickCount.coerceIn(0, MAX_CLICK_COUNT),
             points = points
                 .map { point ->
                     point.copy(
@@ -170,14 +190,24 @@ class AutoClickStore(context: Context) {
         return "配置 $timeText"
     }
 
+    private data class AutoClickPresetExportPayload(
+        val format: String = EXPORT_FORMAT,
+        val version: Int = EXPORT_VERSION,
+        val exportedAtMillis: Long = 0L,
+        val preset: AutoClickPresetConfig = AutoClickPresetConfig()
+    )
+
     private companion object {
         private const val PREF_NAME = "auto_click"
         private const val CONFIG_KEY = "auto_click_config"
         private const val PRESET_KEY = "auto_click_presets"
+        private const val EXPORT_FORMAT = "org.xiaobu.autoclick.auto_click_preset"
+        private const val EXPORT_VERSION = 1
         private const val MAX_POINTS = 10
         private const val MAX_PRESETS = 12
         private const val MIN_INTERVAL_MS = 50
         private const val MAX_INTERVAL_MS = 60_000
         private const val MAX_DURATION_SECONDS = 24 * 60 * 60
+        private const val MAX_CLICK_COUNT = 1_000_000
     }
 }
