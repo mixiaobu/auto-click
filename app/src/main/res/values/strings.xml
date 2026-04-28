@@ -1,3 +1,5 @@
 <resources>
-    <string name="app_name">auto-click</string>
+    <string name="app_name">自动点击</string>
+    <string name="accessibility_service_name">自动点击</string>
+    <string name="accessibility_service_description">用于执行自动点击手势</string>
 </resources>
