@@ -1,8 +1,5 @@
 package org.xiaobu.autoclick.ui.screen
 
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -76,7 +74,7 @@ import org.xiaobu.autoclick.service.AutoClickOverlayService
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AutoClickScreen() {
+fun AutoClickScreen(onBack: (() -> Unit)? = null) {
     val context = LocalContext.current
     val app = remember(context) { context.applicationContext as AutoClickApp }
     val store = app.autoClickStore
@@ -168,7 +166,17 @@ fun AutoClickScreen() {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("连点器") }
+                title = { Text("连点器") },
+                navigationIcon = {
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                contentDescription = "返回"
+                            )
+                        }
+                    }
+                }
             )
         }
     ) { innerPadding ->
@@ -807,26 +815,6 @@ private fun SectionSurface(content: @Composable ColumnScope.() -> Unit) {
             content = content
         )
     }
-}
-
-private fun openOverlayPermission(context: Context) {
-    val intent = Intent(
-        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-        Uri.parse("package:${context.packageName}")
-    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    runCatching {
-        context.startActivity(intent)
-    }.onFailure {
-        context.startActivity(
-            Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
-    }
-}
-
-private fun openAccessibilitySettings(context: Context) {
-    context.startActivity(
-        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    )
 }
 
 private fun formatDuration(durationSeconds: Int): String {
