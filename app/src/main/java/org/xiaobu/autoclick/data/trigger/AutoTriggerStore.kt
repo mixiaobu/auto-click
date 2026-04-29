@@ -9,8 +9,10 @@ import com.google.gson.reflect.TypeToken
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.random.Random
 import org.xiaobu.autoclick.data.task.AutoTaskStep
 import org.xiaobu.autoclick.data.task.AutoTaskTarget
+import org.xiaobu.autoclick.data.task.AutoTaskTargetType
 
 class AutoTriggerStore(context: Context) {
 
@@ -60,30 +62,36 @@ class AutoTriggerStore(context: Context) {
     }
 
     fun encodeTrigger(trigger: AutoTriggerConfig): String {
-        return AutoTriggerExportPayload(trigger = trigger.sanitizeSaved()).toJson()
+        return AutoTriggerExportPayload(trigger = trigger.sanitizeSaved().clearImageTargetUris()).toJson()
     }
 
     fun decodeTrigger(rawJson: String): AutoTriggerConfig? {
         val payload = rawJson.fromJson<AutoTriggerExportPayload>()
         if (payload != null && payload.type == EXPORT_TYPE) {
-            return payload.trigger.sanitizeSaved()
+            return payload.trigger.sanitizeSaved().clearImageTargetUris()
         }
-        return rawJson.fromJson<AutoTriggerConfig>()?.sanitizeSaved()
+        return rawJson.fromJson<AutoTriggerConfig>()?.sanitizeSaved()?.clearImageTargetUris()
     }
 
     private fun AutoTriggerConfig.sanitizeDraft(): AutoTriggerConfig {
         val targetApps = normalizeTargetApps()
+        val safeEventTypes = effectiveEventTypes
         return copy(
+            id = id.ifBlank { buildTriggerId() },
             name = name.trim(),
             packageName = targetApps.firstOrNull()?.packageName.orEmpty(),
             appLabel = targetApps.firstOrNull()?.appLabel.orEmpty(),
             targetApps = targetApps,
-            eventTypes = effectiveEventTypes,
+            eventType = safeEventTypes.first(),
+            eventTypes = safeEventTypes,
             pageKeyword = "",
             keywordExact = false,
             cooldownMs = cooldownMs.coerceAtLeast(0L),
             updatedAt = updatedAt.coerceAtLeast(0L),
-            steps = steps.map { it.sanitize() }
+            steps = steps
+                .map { it.sanitize() }
+                .distinctBy { it.id }
+                .take(MAX_STEPS)
         )
     }
 
@@ -120,6 +128,7 @@ class AutoTriggerStore(context: Context) {
 
     private fun AutoTaskStep.sanitize(): AutoTaskStep {
         return copy(
+            id = id.ifBlank { buildStepId() },
             title = title.trim(),
             durationMs = durationMs.coerceAtLeast(20L),
             delayAfterMs = delayAfterMs.coerceAtLeast(0L),
@@ -138,9 +147,36 @@ class AutoTriggerStore(context: Context) {
         )
     }
 
+    private fun AutoTriggerConfig.clearImageTargetUris(): AutoTriggerConfig {
+        return copy(steps = steps.map { it.clearImageTargetUris() })
+    }
+
+    private fun AutoTaskStep.clearImageTargetUris(): AutoTaskStep {
+        return copy(
+            target = target?.clearImageUri(),
+            secondaryTarget = secondaryTarget?.clearImageUri()
+        )
+    }
+
+    private fun AutoTaskTarget.clearImageUri(): AutoTaskTarget {
+        return if (type == AutoTaskTargetType.IMAGE) {
+            copy(imageUri = "")
+        } else {
+            this
+        }
+    }
+
     private fun buildDefaultTriggerName(timeMillis: Long): String {
         val timeText = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(timeMillis))
         return "触发器 $timeText"
+    }
+
+    private fun buildTriggerId(): String {
+        return "auto_trigger_${System.currentTimeMillis()}_${Random.nextInt(1000, 9999)}"
+    }
+
+    private fun buildStepId(): String {
+        return "auto_trigger_step_${System.currentTimeMillis()}_${Random.nextInt(1000, 9999)}"
     }
 
     private fun Any.toJson(): String {
@@ -168,6 +204,7 @@ class AutoTriggerStore(context: Context) {
         private const val DRAFT_KEY = "auto_trigger_draft"
         private const val LIST_KEY = "auto_trigger_list"
         private const val MAX_TRIGGERS = 20
+        private const val MAX_STEPS = 100
         private const val EXPORT_TYPE = "auto_trigger_config"
         private const val EXPORT_VERSION = 1
     }

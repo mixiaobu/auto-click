@@ -59,15 +59,15 @@ class AutoTaskStore(context: Context) {
     }
 
     fun encodeTask(task: AutoTaskConfig): String {
-        return AutoTaskExportPayload(task = task.sanitizeSaved()).toJson()
+        return AutoTaskExportPayload(task = task.sanitizeSaved().clearImageTargetUris()).toJson()
     }
 
     fun decodeTask(rawJson: String): AutoTaskConfig? {
         val payload = rawJson.fromJson<AutoTaskExportPayload>()
         if (payload != null && payload.type == EXPORT_TYPE) {
-            return payload.task.sanitizeSaved()
+            return payload.task.sanitizeSaved().clearImageTargetUris()
         }
-        return rawJson.fromJson<AutoTaskConfig>()?.sanitizeSaved()
+        return rawJson.fromJson<AutoTaskConfig>()?.sanitizeSaved()?.clearImageTargetUris()
     }
 
     private fun AutoTaskConfig.sanitizeDraft(): AutoTaskConfig {
@@ -109,6 +109,25 @@ class AutoTaskStore(context: Context) {
             index = index.coerceAtLeast(1),
             imageUri = imageUri.trim()
         )
+    }
+
+    private fun AutoTaskConfig.clearImageTargetUris(): AutoTaskConfig {
+        return copy(steps = steps.map { it.clearImageTargetUris() })
+    }
+
+    private fun AutoTaskStep.clearImageTargetUris(): AutoTaskStep {
+        return copy(
+            target = target?.clearImageUri(),
+            secondaryTarget = secondaryTarget?.clearImageUri()
+        )
+    }
+
+    private fun AutoTaskTarget.clearImageUri(): AutoTaskTarget {
+        return if (type == AutoTaskTargetType.IMAGE) {
+            copy(imageUri = "")
+        } else {
+            this
+        }
     }
 
     private fun Any.toJson(): String {

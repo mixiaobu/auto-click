@@ -37,6 +37,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.xiaobu.autoclick.AutoClickApp
 import org.xiaobu.autoclick.data.task.AutoTaskActionType
@@ -52,6 +54,7 @@ class AutoClickAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val triggerExecutionJobs = mutableMapOf<String, Job>()
     private val triggerLastRunAt = mutableMapOf<String, Long>()
+    private val triggerExecutionMutex = Mutex()
     private var keepAliveView: View? = null
     private var keepAliveWindowManager: WindowManager? = null
 
@@ -253,32 +256,31 @@ class AutoClickAccessibilityService : AccessibilityService() {
         val sourcePackageName = event.packageName?.toString().orEmpty()
         if (sourcePackageName.isBlank() || sourcePackageName == packageName) return
 
-        val trigger = (application as? AutoClickApp)
+        val triggers = (application as? AutoClickApp)
             ?.autoTriggerStore
             ?.getTriggers()
             .orEmpty()
-            .firstOrNull { config ->
+            .filter { config ->
                 shouldExecuteTrigger(
                     trigger = config,
                     eventType = triggerEventType,
                     packageName = sourcePackageName,
                     event = event
                 )
-            } ?: return
+            }
+        if (triggers.isEmpty()) return
 
+        triggers.forEach(::scheduleTriggerExecution)
+    }
+
+    private fun scheduleTriggerExecution(trigger: AutoTriggerConfig) {
         triggerLastRunAt[trigger.id] = System.currentTimeMillis()
         val executionJob = serviceScope.launch {
             try {
-                for (step in trigger.steps) {
-                    val success = executeStep(step)
-                    if (!success) {
-                        Log.w(TAG, "trigger step failed: trigger=${trigger.name} step=${step.title}")
-                        return@launch
-                    }
-                    if (step.delayAfterMs > 0L) {
-                        delay(step.delayAfterMs)
-                    }
+                val success = triggerExecutionMutex.withLock {
+                    executeTriggerSteps(trigger)
                 }
+                if (!success) return@launch
                 AutoClickApp.showToast("已触发 ${trigger.name.ifBlank { "触发器" }}")
             } catch (_: CancellationException) {
                 Log.d(TAG, "trigger canceled: ${trigger.name}")
@@ -290,6 +292,20 @@ class AutoClickAccessibilityService : AccessibilityService() {
                 triggerExecutionJobs.remove(trigger.id)
             }
         }
+    }
+
+    private suspend fun executeTriggerSteps(trigger: AutoTriggerConfig): Boolean {
+        for (step in trigger.steps) {
+            val success = executeStep(step)
+            if (!success) {
+                Log.w(TAG, "trigger step failed: trigger=${trigger.name} step=${step.title}")
+                return false
+            }
+            if (step.delayAfterMs > 0L) {
+                delay(step.delayAfterMs)
+            }
+        }
+        return true
     }
 
     private fun shouldExecuteTrigger(

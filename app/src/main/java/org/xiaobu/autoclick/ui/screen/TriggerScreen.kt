@@ -82,6 +82,7 @@ import java.io.InputStreamReader
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.delay
 import org.xiaobu.autoclick.AutoClickApp
 import org.xiaobu.autoclick.data.app.InstalledAppInfo
@@ -141,7 +142,13 @@ fun TriggerScreen(onBack: () -> Unit) {
                 writer.write(store.encodeTrigger(trigger))
             }
         }.isSuccess
-        AutoClickApp.showToast(if (success) "已导出触发器" else "导出失败")
+        AutoClickApp.showToast(
+            if (success) {
+                if (trigger.hasImageStep()) "已导出触发器，图片识别步骤需重新选图" else "已导出触发器"
+            } else {
+                "导出失败"
+            }
+        )
     }
 
     val importLauncher = rememberLauncherForActivityResult(
@@ -157,9 +164,21 @@ fun TriggerScreen(onBack: () -> Unit) {
             AutoClickApp.showToast("导入失败，JSON 格式不正确")
             return@rememberLauncherForActivityResult
         }
-        store.saveTrigger(importedTrigger)
-        syncDraft(importedTrigger)
-        AutoClickApp.showToast("已导入触发器")
+        val hasImageStep = importedTrigger.hasImageStep()
+        val savedTrigger = importedTrigger.copy(
+            id = UUID.randomUUID().toString(),
+            enabled = if (hasImageStep) false else importedTrigger.enabled,
+            updatedAt = System.currentTimeMillis()
+        )
+        store.saveTrigger(savedTrigger)
+        syncDraft(savedTrigger)
+        AutoClickApp.showToast(
+            if (hasImageStep) {
+                "已导入触发器，图片识别步骤需重新选图"
+            } else {
+                "已导入触发器"
+            }
+        )
     }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -1355,6 +1374,13 @@ private fun buildTriggerAppSummary(trigger: AutoTriggerConfig): String {
     val first = apps.first()
     val firstLabel = first.appLabel.ifBlank { first.packageName }
     return if (apps.size == 1) firstLabel else "$firstLabel 等 ${apps.size} 个应用"
+}
+
+private fun AutoTriggerConfig.hasImageStep(): Boolean {
+    return steps.any { step ->
+        step.target?.type == AutoTaskTargetType.IMAGE ||
+            step.secondaryTarget?.type == AutoTaskTargetType.IMAGE
+    }
 }
 
 private fun formatTime(timeMillis: Long): String {
