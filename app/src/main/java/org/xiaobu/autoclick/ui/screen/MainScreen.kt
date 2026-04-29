@@ -12,6 +12,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -40,7 +44,8 @@ import org.xiaobu.autoclick.service.AutoClickAccessibilityService
 fun MainScreen(
     onOpenAutoClick: () -> Unit,
     onOpenAutoTask: () -> Unit,
-    onOpenTrigger: () -> Unit
+    onOpenTrigger: () -> Unit,
+    onOpenSettings: () -> Unit
 ) {
     val context = LocalContext.current
     val app = remember(context) { context.applicationContext as AutoClickApp }
@@ -94,7 +99,17 @@ fun MainScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("自动点击") })
+            TopAppBar(
+                title = { Text("自动点击") },
+                actions = {
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(
+                            imageVector = Icons.Rounded.Settings,
+                            contentDescription = "设置"
+                        )
+                    }
+                }
+            )
         }
     ) { innerPadding ->
         Column(
