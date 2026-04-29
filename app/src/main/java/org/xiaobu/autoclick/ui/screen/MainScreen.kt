@@ -39,6 +39,7 @@ import org.xiaobu.autoclick.service.AutoClickAccessibilityService
 @Composable
 fun MainScreen(
     onOpenAutoClick: () -> Unit,
+    onOpenAutoTask: () -> Unit,
     onOpenTrigger: () -> Unit
 ) {
     val context = LocalContext.current
@@ -47,6 +48,7 @@ fun MainScreen(
     var overlayGranted by remember { mutableStateOf(false) }
     var accessibilityGranted by remember { mutableStateOf(false) }
     var autoClickPresetCount by remember { mutableIntStateOf(0) }
+    var autoTaskCount by remember { mutableIntStateOf(0) }
     var triggerCount by remember { mutableIntStateOf(0) }
     var enabledTriggerCount by remember { mutableIntStateOf(0) }
 
@@ -54,6 +56,7 @@ fun MainScreen(
         overlayGranted = Settings.canDrawOverlays(context)
         accessibilityGranted = AutoClickAccessibilityService.isServiceEnabled(context)
         autoClickPresetCount = app.autoClickStore.getPresets().size
+        autoTaskCount = app.autoTaskStore.getTasks().size
         val triggers = app.autoTriggerStore.getTriggers()
         triggerCount = triggers.size
         enabledTriggerCount = triggers.count { it.enabled }
@@ -120,6 +123,12 @@ fun MainScreen(
                 description = "监听目标应用事件，自动执行点击、滑动和系统动作",
                 countLabel = "$triggerCount 条规则 · $enabledTriggerCount 条启用",
                 onClick = { openFeatureIfPermissionsGranted(onOpenTrigger) }
+            )
+            ToolEntry(
+                title = "自动点击器",
+                description = "按步骤执行点击、滑动、等待、文字识别、图片识别和系统动作",
+                countLabel = "$autoTaskCount 个配置",
+                onClick = { openFeatureIfPermissionsGranted(onOpenAutoTask) }
             )
         }
     }

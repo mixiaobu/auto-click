@@ -48,3 +48,11 @@ data class AutoTaskStep(
     val target: AutoTaskTarget? = null,
     val secondaryTarget: AutoTaskTarget? = null
 )
+
+data class AutoTaskConfig(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String = "",
+    val repeatEnabled: Boolean = false,
+    val steps: List<AutoTaskStep> = emptyList(),
+    val updatedAt: Long = 0L
+)

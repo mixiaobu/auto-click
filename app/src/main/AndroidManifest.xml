@@ -24,6 +24,10 @@
             android:exported="false" />
 
         <service
+            android:name=".service.AutoTaskOverlayService"
+            android:exported="false" />
+
+        <service
             android:name=".service.AutoTaskCoordinatePickerService"
             android:exported="false"
             android:foregroundServiceType="specialUse">

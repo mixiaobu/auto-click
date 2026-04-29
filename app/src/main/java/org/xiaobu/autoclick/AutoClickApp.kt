@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import org.xiaobu.autoclick.data.click.AutoClickStore
+import org.xiaobu.autoclick.data.task.AutoTaskStore
 import org.xiaobu.autoclick.data.trigger.AutoTriggerStore
 
 class AutoClickApp : Application() {
@@ -34,6 +35,10 @@ class AutoClickApp : Application() {
 
     val autoTriggerStore: AutoTriggerStore by lazy {
         AutoTriggerStore(this)
+    }
+
+    val autoTaskStore: AutoTaskStore by lazy {
+        AutoTaskStore(this)
     }
 
     override fun onCreate() {
