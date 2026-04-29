@@ -6,6 +6,7 @@ import android.widget.ImageView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
@@ -52,13 +53,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -266,6 +274,16 @@ fun TriggerScreen(onBack: () -> Unit) {
                 onDeleteStep = { step ->
                     syncDraft(draftTrigger.copy(steps = draftTrigger.steps.filterNot { it.id == step.id }))
                 },
+                onMoveStep = moveStep@ { step, targetIndex ->
+                    val currentIndex = draftTrigger.steps.indexOfFirst { it.id == step.id }
+                    if (currentIndex == -1 || targetIndex !in draftTrigger.steps.indices || currentIndex == targetIndex) {
+                        return@moveStep
+                    }
+                    val updatedSteps = draftTrigger.steps.toMutableList().apply {
+                        add(targetIndex, removeAt(currentIndex))
+                    }
+                    syncDraft(draftTrigger.copy(steps = updatedSteps, updatedAt = System.currentTimeMillis()))
+                },
                 onSave = {
                     validateTriggerDraft(draftTrigger)?.let { error ->
                         AutoClickApp.showToast(error)
@@ -424,6 +442,7 @@ private fun TriggerDraftSection(
     onAddStep: () -> Unit,
     onEditStep: (AutoTaskStep) -> Unit,
     onDeleteStep: (AutoTaskStep) -> Unit,
+    onMoveStep: (AutoTaskStep, Int) -> Unit,
     onSave: () -> Unit
 ) {
     SectionSurface {
@@ -472,7 +491,8 @@ private fun TriggerDraftSection(
             steps = draftTrigger.steps,
             onAddStep = onAddStep,
             onEditStep = onEditStep,
-            onDeleteStep = onDeleteStep
+            onDeleteStep = onDeleteStep,
+            onMoveStep = onMoveStep
         )
         Button(
             onClick = onSave,
@@ -607,7 +627,8 @@ private fun StepList(
     steps: List<AutoTaskStep>,
     onAddStep: () -> Unit,
     onEditStep: (AutoTaskStep) -> Unit,
-    onDeleteStep: (AutoTaskStep) -> Unit
+    onDeleteStep: (AutoTaskStep) -> Unit,
+    onMoveStep: (AutoTaskStep, Int) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
@@ -634,12 +655,16 @@ private fun StepList(
             )
         } else {
             steps.forEachIndexed { index, step ->
-                StepRow(
-                    index = index,
-                    step = step,
-                    onEdit = { onEditStep(step) },
-                    onDelete = { onDeleteStep(step) }
-                )
+                key(step.id) {
+                    StepRow(
+                        index = index,
+                        step = step,
+                        lastIndex = steps.lastIndex,
+                        onEdit = { onEditStep(step) },
+                        onDelete = { onDeleteStep(step) },
+                        onMoveStep = onMoveStep
+                    )
+                }
             }
         }
     }
@@ -649,13 +674,75 @@ private fun StepList(
 private fun StepRow(
     index: Int,
     step: AutoTaskStep,
+    lastIndex: Int,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onMoveStep: (AutoTaskStep, Int) -> Unit
 ) {
+    var rowHeightPx by remember { mutableStateOf(0) }
+    var dragging by remember { mutableStateOf(false) }
+    var dragOffsetY by remember { mutableStateOf(0f) }
+    val density = LocalDensity.current
+    val itemDistancePx = with(density) { rowHeightPx.toFloat() + 8.dp.toPx() }.coerceAtLeast(1f)
+    val currentIndex by rememberUpdatedState(index)
+    val currentStep by rememberUpdatedState(step)
+    val currentLastIndex by rememberUpdatedState(lastIndex)
+    val currentOnMoveStep by rememberUpdatedState(onMoveStep)
+    val canReorder = lastIndex > 0
+    val dragModifier = if (canReorder) {
+        Modifier.pointerInput(step.id, itemDistancePx) {
+            detectDragGesturesAfterLongPress(
+                onDragStart = {
+                    dragging = true
+                    dragOffsetY = 0f
+                },
+                onDragEnd = {
+                    dragging = false
+                    dragOffsetY = 0f
+                },
+                onDragCancel = {
+                    dragging = false
+                    dragOffsetY = 0f
+                },
+                onDrag = { change, dragAmount ->
+                    change.consume()
+                    dragOffsetY += dragAmount.y
+                    val threshold = itemDistancePx / 2f
+                    when {
+                        dragOffsetY <= -threshold && currentIndex > 0 -> {
+                            currentOnMoveStep(currentStep, currentIndex - 1)
+                            dragOffsetY += itemDistancePx
+                        }
+                        dragOffsetY >= threshold && currentIndex < currentLastIndex -> {
+                            currentOnMoveStep(currentStep, currentIndex + 1)
+                            dragOffsetY -= itemDistancePx
+                        }
+                    }
+                }
+            )
+        }
+    } else {
+        Modifier
+    }
+
     Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        color = if (dragging) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        },
         shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.fillMaxWidth()
+        tonalElevation = if (dragging) 4.dp else 0.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .onSizeChanged { rowHeightPx = it.height }
+            .zIndex(if (dragging) 1f else 0f)
+            .graphicsLayer {
+                translationY = if (dragging) dragOffsetY else 0f
+                scaleX = if (dragging) 1.01f else 1f
+                scaleY = if (dragging) 1.01f else 1f
+            }
+            .then(dragModifier)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
