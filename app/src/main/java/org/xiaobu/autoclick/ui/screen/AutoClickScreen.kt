@@ -407,7 +407,7 @@ private fun RuntimeSection(
 ) {
     SectionSurface {
         Text(
-            text = "运行",
+            text = "运行状态",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
@@ -421,13 +421,13 @@ private fun RuntimeSection(
                 modifier = Modifier.size(18.dp)
             )
             Spacer(modifier = Modifier.size(8.dp))
-            Text(if (overlayVisible) "停止悬浮控制器" else "启动悬浮控制器")
+            Text(if (overlayVisible) "停止连点器" else "启动连点器")
         }
         StatusChip(
             label = "当前状态",
             value = when {
                 clicking -> "连点中 · $pointCount 个指针"
-                overlayVisible -> "控制器显示中 · $pointCount 个指针"
+                overlayVisible -> "启动中 · $pointCount 个指针"
                 else -> "未启动 · $pointCount 个指针"
             },
             highlighted = overlayVisible || clicking,
@@ -557,7 +557,7 @@ private fun CurrentConfigSection(
                 modifier = Modifier.size(18.dp)
             )
             Spacer(modifier = Modifier.size(8.dp))
-            Text("保存到历史配置")
+            Text("保存配置")
         }
     }
 }
@@ -748,7 +748,7 @@ private fun PresetSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "历史配置",
+                text = "已保存配置",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
@@ -758,7 +758,7 @@ private fun PresetSection(
         }
         if (presets.isEmpty()) {
             Text(
-                text = "保存当前配置后，这里会显示可复用的历史配置。",
+                text = "保存当前配置后，这里会显示已保存的配置。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

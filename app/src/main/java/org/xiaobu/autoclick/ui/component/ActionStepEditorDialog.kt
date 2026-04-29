@@ -341,7 +341,7 @@ private fun ActionStepTargetEditor(
                         onValueChange = { onTargetChange(target.copy(text = it)) },
                         modifier = Modifier.fillMaxWidth(),
                         label = {
-                            Text(if (target.type == AutoTaskTargetType.NODE_TEXT) "目标文字" else "OCR 文字")
+                            Text(if (target.type == AutoTaskTargetType.NODE_TEXT) "目标文字" else "文字识别")
                         },
                         singleLine = true
                     )
@@ -358,24 +358,18 @@ private fun ActionStepTargetEditor(
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true
                         )
-                        Surface(
-                            color = MaterialTheme.colorScheme.surface,
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1f)
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 12.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 14.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("精确匹配", style = MaterialTheme.typography.bodyMedium)
-                                Switch(
-                                    checked = target.exact,
-                                    onCheckedChange = { onTargetChange(target.copy(exact = it)) }
-                                )
-                            }
+                            Text("精确匹配", style = MaterialTheme.typography.bodyMedium)
+                            Switch(
+                                checked = target.exact,
+                                onCheckedChange = { onTargetChange(target.copy(exact = it)) }
+                            )
                         }
                     }
                 }

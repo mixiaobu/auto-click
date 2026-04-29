@@ -111,8 +111,8 @@ fun MainScreen(
             )
             ToolEntry(
                 title = "连点器",
-                description = "多点顺序点击，支持间隔、持续时长和历史配置",
-                countLabel = "$autoClickPresetCount 个历史配置",
+                description = "多点顺序点击，支持间隔、持续时长、点击次数",
+                countLabel = "$autoClickPresetCount 个配置",
                 onClick = { openFeatureIfPermissionsGranted(onOpenAutoClick) }
             )
             ToolEntry(

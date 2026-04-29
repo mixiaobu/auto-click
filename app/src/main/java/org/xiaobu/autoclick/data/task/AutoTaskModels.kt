@@ -25,7 +25,7 @@ enum class AutoTaskTargetType(
 ) {
     COORDINATE("坐标"),
     NODE_TEXT("文字查找"),
-    OCR_TEXT("OCR 文字"),
+    OCR_TEXT("文字识别"),
     IMAGE("图片识别")
 }
 

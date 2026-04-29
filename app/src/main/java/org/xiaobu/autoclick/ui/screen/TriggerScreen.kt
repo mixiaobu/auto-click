@@ -116,8 +116,9 @@ fun TriggerScreen(onBack: () -> Unit) {
     }
 
     fun syncDraft(trigger: AutoTriggerConfig) {
-        draftTrigger = trigger
-        store.saveDraft(trigger)
+        val cleanTrigger = trigger.copy(pageKeyword = "", keywordExact = false)
+        draftTrigger = cleanTrigger
+        store.saveDraft(cleanTrigger)
         refreshState()
     }
 
@@ -432,7 +433,7 @@ private fun TriggerDraftSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "当前编辑",
+                text = "当前触发器",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
@@ -467,40 +468,6 @@ private fun TriggerDraftSection(
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             singleLine = true
         )
-        OutlinedTextField(
-            value = draftTrigger.pageKeyword,
-            onValueChange = { onDraftChange(draftTrigger.copy(pageKeyword = it)) },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("可选关键词过滤") },
-            singleLine = true
-        )
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-            shape = RoundedCornerShape(8.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    Text("关键词精确匹配", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        text = if (draftTrigger.keywordExact) "页面文本必须完全一致" else "页面文本包含关键词即可",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = draftTrigger.keywordExact,
-                    onCheckedChange = { onDraftChange(draftTrigger.copy(keywordExact = it)) }
-                )
-            }
-        }
         StepList(
             steps = draftTrigger.steps,
             onAddStep = onAddStep,
@@ -546,6 +513,7 @@ private fun TriggerTargetAppSection(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -615,6 +583,7 @@ private fun TriggerEventSection(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
@@ -816,6 +785,11 @@ private fun SavedTriggerRow(
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold
                     )
+                    Text(
+                        text = formatTime(trigger.updatedAt),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
                 Switch(
                     checked = trigger.enabled,
@@ -831,7 +805,6 @@ private fun SavedTriggerRow(
                 MetaTag(text = buildTriggerEventSummary(trigger.effectiveEventTypes))
                 MetaTag(text = buildTriggerAppSummary(trigger))
                 MetaTag(text = "步骤 ${trigger.steps.size} 个")
-                MetaTag(text = formatTime(trigger.updatedAt))
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -965,17 +938,20 @@ private fun TriggerAppPickerDialog(
     var keyword by rememberSaveable { mutableStateOf("") }
     var filter by remember { mutableStateOf(TriggerAppFilter.USER) }
     var filterExpanded by remember { mutableStateOf(false) }
+    val initiallySelectedPackageSet = remember(selectedApps) {
+        selectedApps.map { it.packageName }.filter { it.isNotBlank() }.toSet()
+    }
     var selectedPackageSet by remember(selectedApps) {
-        mutableStateOf(selectedApps.map { it.packageName }.filter { it.isNotBlank() }.toSet())
+        mutableStateOf(initiallySelectedPackageSet)
     }
     val selectedLabelMap = remember(selectedApps) {
         selectedApps.associate { it.packageName to it.appLabel }
     }
-    val filteredApps = remember(apps, keyword, filter, selectedPackageSet) {
+    val filteredApps = remember(apps, keyword, filter, initiallySelectedPackageSet) {
         val trimmed = keyword.trim()
         apps
             .filter { app ->
-                when (filter) {
+                app.packageName in initiallySelectedPackageSet || when (filter) {
                     TriggerAppFilter.ALL -> true
                     TriggerAppFilter.USER -> !app.isSystemApp
                     TriggerAppFilter.SYSTEM -> app.isSystemApp
@@ -987,7 +963,7 @@ private fun TriggerAppPickerDialog(
                     app.packageName.contains(trimmed, ignoreCase = true)
             }
             .sortedWith(
-                compareByDescending<InstalledAppInfo> { it.packageName in selectedPackageSet }
+                compareByDescending<InstalledAppInfo> { it.packageName in initiallySelectedPackageSet }
                     .thenBy { it.appLabel.lowercase() }
                     .thenBy { it.packageName }
             )

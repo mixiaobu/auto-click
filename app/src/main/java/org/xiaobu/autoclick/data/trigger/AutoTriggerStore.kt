@@ -79,7 +79,8 @@ class AutoTriggerStore(context: Context) {
             appLabel = targetApps.firstOrNull()?.appLabel.orEmpty(),
             targetApps = targetApps,
             eventTypes = effectiveEventTypes,
-            pageKeyword = pageKeyword.trim(),
+            pageKeyword = "",
+            keywordExact = false,
             cooldownMs = cooldownMs.coerceAtLeast(0L),
             updatedAt = updatedAt.coerceAtLeast(0L),
             steps = steps.map { it.sanitize() }

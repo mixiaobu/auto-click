@@ -9,6 +9,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Path
+import android.graphics.PixelFormat
 import android.graphics.Point
 import android.graphics.Rect
 import android.net.Uri
@@ -16,6 +17,9 @@ import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import android.view.Display
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.google.mlkit.vision.common.InputImage
@@ -48,6 +52,8 @@ class AutoClickAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val triggerExecutionJobs = mutableMapOf<String, Job>()
     private val triggerLastRunAt = mutableMapOf<String, Long>()
+    private var keepAliveView: View? = null
+    private var keepAliveWindowManager: WindowManager? = null
 
     companion object {
         private const val TAG = "AutoClickA11y"
@@ -173,6 +179,7 @@ class AutoClickAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         currentService = this
+        ensureKeepAliveOverlay()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -184,6 +191,7 @@ class AutoClickAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         serviceScope.cancel()
+        removeKeepAliveOverlay()
         if (currentService === this) {
             currentService = null
         }
@@ -191,10 +199,53 @@ class AutoClickAccessibilityService : AccessibilityService() {
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
+        removeKeepAliveOverlay()
         if (currentService === this) {
             currentService = null
         }
         return super.onUnbind(intent)
+    }
+
+    private fun ensureKeepAliveOverlay() {
+        if (keepAliveView != null) return
+        val windowManager = keepAliveWindowManager
+            ?: (getSystemService(WINDOW_SERVICE) as WindowManager).also {
+                keepAliveWindowManager = it
+            }
+        val view = View(this).apply {
+            alpha = 0f
+            isClickable = false
+            isFocusable = false
+        }
+        val params = WindowManager.LayoutParams(
+            1,
+            1,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+            alpha = 0f
+        }
+        runCatching {
+            windowManager.addView(view, params)
+            keepAliveView = view
+        }.onFailure { error ->
+            Log.w(TAG, "ensureKeepAliveOverlay failed", error)
+        }
+    }
+
+    private fun removeKeepAliveOverlay() {
+        val windowManager = keepAliveWindowManager ?: return
+        val view = keepAliveView ?: return
+        runCatching { windowManager.removeView(view) }
+        keepAliveView = null
     }
 
     private fun handleTriggerEvent(event: AccessibilityEvent) {
