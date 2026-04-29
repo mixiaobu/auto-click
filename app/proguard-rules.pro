@@ -19,3 +19,10 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Gson reads and writes app configs by field name. Keep model field names stable
+# so SharedPreferences data and exported JSON files stay compatible after R8.
+-keepattributes Signature,*Annotation*
+-keepclassmembers,allowoptimization class org.xiaobu.autoclick.data.** {
+    <fields>;
+}
