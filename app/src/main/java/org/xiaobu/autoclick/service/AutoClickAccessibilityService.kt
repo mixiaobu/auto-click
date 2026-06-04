@@ -24,11 +24,13 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import java.net.URL
 import kotlin.coroutines.resume
 import kotlin.math.abs
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -51,7 +53,12 @@ import org.xiaobu.autoclick.data.trigger.AutoTriggerEventType
 @SuppressLint("AccessibilityPolicy")
 class AutoClickAccessibilityService : AccessibilityService() {
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val serviceExceptionHandler = CoroutineExceptionHandler { _, error ->
+        Log.e(TAG, "accessibility coroutine failed", error)
+    }
+    private val serviceScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Main.immediate + serviceExceptionHandler
+    )
     private val triggerExecutionJobs = mutableMapOf<String, Job>()
     private val triggerLastRunAt = mutableMapOf<String, Long>()
     private val triggerExecutionMutex = Mutex()
@@ -64,6 +71,9 @@ class AutoClickAccessibilityService : AccessibilityService() {
         private const val DEFAULT_LONG_PRESS_DURATION_MS = 500L
         private const val DEFAULT_DOUBLE_TAP_INTERVAL_MS = 100L
         private const val DEFAULT_SWIPE_DURATION_MS = 500L
+        private const val MAX_NODE_TRAVERSAL_DEPTH = 60
+        private const val MAX_NODE_TRAVERSAL_COUNT = 800
+        private const val MAX_NODE_MATCHES = 200
 
         @Volatile
         private var currentService: AutoClickAccessibilityService? = null
@@ -187,7 +197,11 @@ class AutoClickAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        handleTriggerEvent(event)
+        runCatching {
+            handleTriggerEvent(event)
+        }.onFailure { error ->
+            Log.e(TAG, "handle accessibility event failed", error)
+        }
     }
 
     override fun onInterrupt() = Unit
@@ -252,22 +266,38 @@ class AutoClickAccessibilityService : AccessibilityService() {
     }
 
     private fun handleTriggerEvent(event: AccessibilityEvent) {
-        val triggerEventType = AutoTriggerEventType.fromAccessibilityEvent(event.eventType) ?: return
-        val sourcePackageName = event.packageName?.toString().orEmpty()
+        val triggerEventType = runCatching {
+            AutoTriggerEventType.fromAccessibilityEvent(event.eventType)
+        }.onFailure { error ->
+            Log.e(TAG, "read trigger event type failed", error)
+        }.getOrNull() ?: return
+        val sourcePackageName = runCatching {
+            event.packageName?.toString().orEmpty()
+        }.onFailure { error ->
+            Log.e(TAG, "read trigger package failed", error)
+        }.getOrDefault("")
         if (sourcePackageName.isBlank() || sourcePackageName == packageName) return
 
-        val triggers = (application as? AutoClickApp)
-            ?.autoTriggerStore
-            ?.getTriggers()
-            .orEmpty()
-            .filter { config ->
-                shouldExecuteTrigger(
-                    trigger = config,
-                    eventType = triggerEventType,
-                    packageName = sourcePackageName,
-                    event = event
-                )
-            }
+        val triggers = runCatching {
+            (application as? AutoClickApp)
+                ?.autoTriggerStore
+                ?.getTriggers()
+                .orEmpty()
+                .filter { config ->
+                    runCatching {
+                        shouldExecuteTrigger(
+                            trigger = config,
+                            eventType = triggerEventType,
+                            packageName = sourcePackageName,
+                            event = event
+                        )
+                    }.onFailure { error ->
+                        Log.e(TAG, "check trigger failed: ${config.name}", error)
+                    }.getOrDefault(false)
+                }
+        }.onFailure { error ->
+            Log.e(TAG, "load triggers failed", error)
+        }.getOrDefault(emptyList())
         if (triggers.isEmpty()) return
 
         triggers.forEach(::scheduleTriggerExecution)
@@ -284,6 +314,8 @@ class AutoClickAccessibilityService : AccessibilityService() {
                 AutoClickApp.showToast("已触发 ${trigger.name.ifBlank { "触发器" }}")
             } catch (_: CancellationException) {
                 Log.d(TAG, "trigger canceled: ${trigger.name}")
+            } catch (error: Throwable) {
+                Log.e(TAG, "trigger execution failed: ${trigger.name}", error)
             }
         }
         triggerExecutionJobs[trigger.id] = executionJob
@@ -296,7 +328,14 @@ class AutoClickAccessibilityService : AccessibilityService() {
 
     private suspend fun executeTriggerSteps(trigger: AutoTriggerConfig): Boolean {
         for (step in trigger.steps) {
-            val success = executeStep(step)
+            val success = try {
+                executeStep(step)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                Log.e(TAG, "trigger step exception: trigger=${trigger.name} step=${step.title}", error)
+                false
+            }
             if (!success) {
                 Log.w(TAG, "trigger step failed: trigger=${trigger.name} step=${step.title}")
                 return false
@@ -345,55 +384,70 @@ class AutoClickAccessibilityService : AccessibilityService() {
         keyword: String,
         exact: Boolean
     ): Boolean {
-        val candidates = buildList {
-            add(event.className?.toString().orEmpty())
-            add(event.contentDescription?.toString().orEmpty())
-            event.text.orEmpty().forEach { add(it.toString()) }
-        }.filter { it.isNotBlank() }
+        val candidates = runCatching {
+            buildList {
+                add(event.className?.toString().orEmpty())
+                add(event.contentDescription?.toString().orEmpty())
+                event.text.orEmpty().forEach { add(it.toString()) }
+            }.filter { it.isNotBlank() }
+        }.onFailure { error ->
+            Log.e(TAG, "read trigger keyword candidates failed", error)
+        }.getOrDefault(emptyList())
         if (candidates.any { matchesText(it, keyword, exact) }) return true
-        return findBoundsByNodeText(keyword, index = 0, exact = exact) != null
+        return runCatching {
+            findBoundsByNodeText(keyword, index = 0, exact = exact) != null
+        }.onFailure { error ->
+            Log.e(TAG, "match trigger keyword by node failed", error)
+        }.getOrDefault(false)
     }
 
     private suspend fun executeStep(step: AutoTaskStep): Boolean {
-        val success = when (step.actionType) {
-            AutoTaskActionType.WAIT -> {
-                delay(step.durationMs.coerceAtLeast(20L))
-                true
-            }
+        val success = try {
+            when (step.actionType) {
+                AutoTaskActionType.WAIT -> {
+                    delay(step.durationMs.coerceAtLeast(20L))
+                    true
+                }
 
-            AutoTaskActionType.TAP -> {
-                val point = resolveTargetCenter(step.target) ?: return false
-                tapAwait(point, step.durationMs)
-            }
+                AutoTaskActionType.TAP -> {
+                    val point = resolveTargetCenter(step.target) ?: return false
+                    tapAwait(point, step.durationMs)
+                }
 
-            AutoTaskActionType.DOUBLE_TAP -> {
-                val point = resolveTargetCenter(step.target) ?: return false
-                doubleTapAwait(point, durationMs = step.durationMs)
-            }
+                AutoTaskActionType.DOUBLE_TAP -> {
+                    val point = resolveTargetCenter(step.target) ?: return false
+                    doubleTapAwait(point, durationMs = step.durationMs)
+                }
 
-            AutoTaskActionType.LONG_PRESS -> {
-                val point = resolveTargetCenter(step.target) ?: return false
-                longPressAwait(point, durationMs = step.durationMs.coerceAtLeast(300L))
-            }
+                AutoTaskActionType.LONG_PRESS -> {
+                    val point = resolveTargetCenter(step.target) ?: return false
+                    longPressAwait(point, durationMs = step.durationMs.coerceAtLeast(300L))
+                }
 
-            AutoTaskActionType.SWIPE -> {
-                val from = resolveTargetCenter(step.target) ?: return false
-                val to = resolveTargetCenter(step.secondaryTarget) ?: return false
-                swipeAwait(from, to, durationMs = step.durationMs.coerceAtLeast(100L))
-            }
+                AutoTaskActionType.SWIPE -> {
+                    val from = resolveTargetCenter(step.target) ?: return false
+                    val to = resolveTargetCenter(step.secondaryTarget) ?: return false
+                    swipeAwait(from, to, durationMs = step.durationMs.coerceAtLeast(100L))
+                }
 
-            AutoTaskActionType.BACK -> performGlobalAction(GLOBAL_ACTION_BACK)
-            AutoTaskActionType.HOME -> performGlobalAction(GLOBAL_ACTION_HOME)
-            AutoTaskActionType.RECENTS -> performGlobalAction(GLOBAL_ACTION_RECENTS)
-            AutoTaskActionType.NOTIFICATIONS -> performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
-            AutoTaskActionType.QUICK_SETTINGS -> performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
-            AutoTaskActionType.LOCK_SCREEN -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
-                } else {
-                    false
+                AutoTaskActionType.BACK -> performGlobalAction(GLOBAL_ACTION_BACK)
+                AutoTaskActionType.HOME -> performGlobalAction(GLOBAL_ACTION_HOME)
+                AutoTaskActionType.RECENTS -> performGlobalAction(GLOBAL_ACTION_RECENTS)
+                AutoTaskActionType.NOTIFICATIONS -> performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
+                AutoTaskActionType.QUICK_SETTINGS -> performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
+                AutoTaskActionType.LOCK_SCREEN -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+                    } else {
+                        false
+                    }
                 }
             }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Log.e(TAG, "execute step exception: ${step.actionType} ${step.title}", error)
+            false
         }
         if (!success) {
             Log.w(TAG, "execute step failed: ${step.actionType} ${step.title}")
@@ -419,17 +473,25 @@ class AutoClickAccessibilityService : AccessibilityService() {
 
             AutoTaskTargetType.IMAGE -> {
                 val bitmap = loadTargetBitmap(target.imageUri) ?: return null
-                findBoundsByImage(bitmap)?.let { Point(it.centerX(), it.centerY()) }
+                try {
+                    findBoundsByImage(bitmap)?.let { Point(it.centerX(), it.centerY()) }
+                } finally {
+                    recycleBitmap(bitmap)
+                }
             }
         }
     }
 
     private fun tap(point: Point, durationMs: Long): Boolean {
-        return dispatchGesture(
-            buildTapGesture(point, durationMs, startTimeMs = 0L),
-            null,
-            null
-        )
+        return runCatching {
+            dispatchGesture(
+                buildTapGesture(point, durationMs, startTimeMs = 0L),
+                null,
+                null
+            )
+        }.onFailure { error ->
+            Log.e(TAG, "dispatch tap failed: x=${point.x} y=${point.y}", error)
+        }.getOrDefault(false)
     }
 
     private suspend fun tapAwait(
@@ -497,21 +559,28 @@ class AutoClickAccessibilityService : AccessibilityService() {
 
     private suspend fun dispatchGestureAwait(gesture: GestureDescription): Boolean {
         return suspendCancellableCoroutine { continuation ->
-            val started = dispatchGesture(
-                gesture,
-                object : GestureResultCallback() {
-                    override fun onCompleted(gestureDescription: GestureDescription?) {
-                        if (continuation.isActive) continuation.resume(true)
-                    }
+            runCatching {
+                val started = dispatchGesture(
+                    gesture,
+                    object : GestureResultCallback() {
+                        override fun onCompleted(gestureDescription: GestureDescription?) {
+                            if (continuation.isActive) continuation.resume(true)
+                        }
 
-                    override fun onCancelled(gestureDescription: GestureDescription?) {
-                        if (continuation.isActive) continuation.resume(false)
-                    }
-                },
-                null
-            )
-            if (!started && continuation.isActive) {
-                continuation.resume(false)
+                        override fun onCancelled(gestureDescription: GestureDescription?) {
+                            if (continuation.isActive) continuation.resume(false)
+                        }
+                    },
+                    null
+                )
+                if (!started && continuation.isActive) {
+                    continuation.resume(false)
+                }
+            }.onFailure { error ->
+                Log.e(TAG, "dispatch gesture failed", error)
+                if (continuation.isActive) {
+                    continuation.resume(false)
+                }
             }
         }
     }
@@ -535,12 +604,12 @@ class AutoClickAccessibilityService : AccessibilityService() {
     ): Rect? {
         val keyword = text.trim()
         if (keyword.isBlank()) return null
-        val matches = collectNodeMatches(keyword, exact)
-        return matches
-            .getOrNull(index.coerceAtLeast(0))
-            ?.let { node ->
-                Rect().also(node::getBoundsInScreen)
-            }
+        val matchedBounds = runCatching {
+            collectNodeMatchBounds(keyword, exact)
+        }.onFailure { error ->
+            Log.e(TAG, "collect node matches failed: text=$keyword", error)
+        }.getOrDefault(emptyList())
+        return matchedBounds.getOrNull(index.coerceAtLeast(0))
     }
 
     private suspend fun findBoundsByOcr(
@@ -548,51 +617,88 @@ class AutoClickAccessibilityService : AccessibilityService() {
         index: Int = 0,
         exact: Boolean = false
     ): Rect? {
-        val keyword = text.trim()
-        if (keyword.isBlank()) return null
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            Log.w(TAG, "OCR requires Android 11 or above")
-            return null
-        }
-        val screenshot = takeScreenshotBitmap() ?: return null
-        val recognizer = TextRecognition.getClient(
-            ChineseTextRecognizerOptions.Builder().build()
-        )
-        return suspendCancellableCoroutine { continuation ->
-            val image = InputImage.fromBitmap(screenshot, 0)
-            recognizer.process(image)
-                .addOnSuccessListener { result ->
-                    val matchedRects = buildList {
-                        result.textBlocks.forEach { block ->
-                            if (matchesText(block.text.orEmpty(), keyword, exact)) {
-                                block.boundingBox?.let(::add)
-                            }
-                            block.lines.forEach { line ->
-                                if (matchesText(line.text.orEmpty(), keyword, exact)) {
-                                    line.boundingBox?.let(::add)
-                                }
-                                line.elements.forEach { element ->
-                                    if (matchesText(element.text.orEmpty(), keyword, exact)) {
-                                        element.boundingBox?.let(::add)
+        return try {
+            val keyword = text.trim()
+            if (keyword.isBlank()) return null
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                Log.w(TAG, "OCR requires Android 11 or above")
+                return null
+            }
+            val screenshot = takeScreenshotBitmap() ?: return null
+            val recognizer = TextRecognition.getClient(
+                ChineseTextRecognizerOptions.Builder().build()
+            )
+            suspendCancellableCoroutine { continuation ->
+                runCatching {
+                    val image = InputImage.fromBitmap(screenshot, 0)
+                    recognizer.process(image)
+                        .addOnSuccessListener { result ->
+                            runCatching {
+                                val matchedRects = buildList {
+                                    result.textBlocks.forEach { block ->
+                                        if (matchesText(block.text.orEmpty(), keyword, exact)) {
+                                            block.boundingBox?.let(::add)
+                                        }
+                                        block.lines.forEach { line ->
+                                            if (matchesText(line.text.orEmpty(), keyword, exact)) {
+                                                line.boundingBox?.let(::add)
+                                            }
+                                            line.elements.forEach { element ->
+                                                if (matchesText(element.text.orEmpty(), keyword, exact)) {
+                                                    element.boundingBox?.let(::add)
+                                                }
+                                            }
+                                        }
                                     }
+                                }.distinctBy { it.rectKey() }
+                                if (continuation.isActive) {
+                                    continuation.resume(matchedRects.getOrNull(index.coerceAtLeast(0)))
                                 }
+                            }.onFailure { error ->
+                                Log.e(TAG, "OCR result handling failed: text=$keyword", error)
+                                if (continuation.isActive) continuation.resume(null)
                             }
                         }
-                    }.distinctBy { it.rectKey() }
-                    if (continuation.isActive) {
-                        continuation.resume(matchedRects.getOrNull(index.coerceAtLeast(0)))
-                    }
-                    recognizer.close()
-                }
-                .addOnFailureListener { error ->
-                    Log.e(TAG, "OCR failed: text=$keyword", error)
+                        .addOnFailureListener { error ->
+                            Log.e(TAG, "OCR failed: text=$keyword", error)
+                            if (continuation.isActive) continuation.resume(null)
+                        }
+                        .addOnCanceledListener {
+                            if (continuation.isActive) continuation.resume(null)
+                        }
+                        .addOnCompleteListener {
+                            closeTextRecognizer(recognizer)
+                            recycleBitmap(screenshot)
+                        }
+                }.onFailure { error ->
+                    Log.e(TAG, "start OCR failed: text=$keyword", error)
                     if (continuation.isActive) continuation.resume(null)
-                    recognizer.close()
+                    closeTextRecognizer(recognizer)
+                    recycleBitmap(screenshot)
                 }
-                .addOnCanceledListener {
-                    if (continuation.isActive) continuation.resume(null)
-                    recognizer.close()
-                }
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Log.e(TAG, "OCR exception: text=$text", error)
+            null
+        }
+    }
+
+    private fun closeTextRecognizer(recognizer: TextRecognizer) {
+        runCatching {
+            recognizer.close()
+        }.onFailure { error ->
+            Log.e(TAG, "close OCR recognizer failed", error)
+        }
+    }
+
+    private fun recycleBitmap(bitmap: Bitmap?) {
+        if (bitmap == null || bitmap.isRecycled) return
+        runCatching {
+            bitmap.recycle()
+        }.onFailure { error ->
+            Log.e(TAG, "recycle bitmap failed", error)
         }
     }
 
@@ -602,23 +708,33 @@ class AutoClickAccessibilityService : AccessibilityService() {
         sampleStep: Int = 4,
         searchStep: Int = 4
     ): Rect? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
-        val screenshot = takeScreenshotBitmap() ?: return null
-        return withContext(Dispatchers.Default) {
-            findTemplateBounds(
-                screenBitmap = screenshot,
-                targetBitmap = targetBitmap,
-                threshold = threshold,
-                sampleStep = sampleStep,
-                searchStep = searchStep
-            )
+        var screenshot: Bitmap? = null
+        return try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+            screenshot = takeScreenshotBitmap() ?: return null
+            withContext(Dispatchers.Default) {
+                findTemplateBounds(
+                    screenBitmap = screenshot,
+                    targetBitmap = targetBitmap,
+                    threshold = threshold,
+                    sampleStep = sampleStep,
+                    searchStep = searchStep
+                )
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Log.e(TAG, "image match exception", error)
+            null
+        } finally {
+            recycleBitmap(screenshot)
         }
     }
 
     private suspend fun loadTargetBitmap(imageUri: String): Bitmap? {
         if (imageUri.isBlank()) return null
-        return withContext(Dispatchers.IO) {
-            runCatching {
+        return try {
+            withContext(Dispatchers.IO) {
                 when {
                     imageUri.startsWith("content://") || imageUri.startsWith("file://") -> {
                         contentResolver.openInputStream(Uri.parse(imageUri))?.use { stream ->
@@ -634,7 +750,12 @@ class AutoClickAccessibilityService : AccessibilityService() {
 
                     else -> BitmapFactory.decodeFile(imageUri)
                 }
-            }.getOrNull()
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Log.e(TAG, "load target bitmap failed: uri=$imageUri", error)
+            null
         }
     }
 
@@ -652,8 +773,14 @@ class AutoClickAccessibilityService : AccessibilityService() {
                                     Bitmap.wrapHardwareBuffer(hardwareBuffer, result.colorSpace)
                                         ?.copy(Bitmap.Config.ARGB_8888, false)
                                 }
+                            }.onFailure { error ->
+                                Log.e(TAG, "copy screenshot failed", error)
                             }.getOrNull()
-                            if (continuation.isActive) continuation.resume(bitmap)
+                            if (continuation.isActive) {
+                                continuation.resume(bitmap)
+                            } else {
+                                recycleBitmap(bitmap)
+                            }
                         }
 
                         override fun onFailure(errorCode: Int) {
@@ -662,22 +789,31 @@ class AutoClickAccessibilityService : AccessibilityService() {
                         }
                     }
                 )
-            } catch (error: Exception) {
+            } catch (error: Throwable) {
                 Log.e(TAG, "takeScreenshot exception", error)
                 if (continuation.isActive) continuation.resume(null)
             }
         }
     }
 
-    private fun collectNodeMatches(
+    private fun collectNodeMatchBounds(
         keyword: String,
         exact: Boolean
-    ): List<AccessibilityNodeInfo> {
+    ): List<Rect> {
         val roots = buildList {
-            rootInActiveWindow?.let(::add)
+            runCatching { rootInActiveWindow }
+                .onFailure { error -> Log.w(TAG, "read active root failed: ${error.message}") }
+                .getOrNull()
+                ?.let(::add)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                windows.orEmpty()
-                    .mapNotNull { it.root }
+                runCatching { windows.orEmpty() }
+                    .onFailure { error -> Log.w(TAG, "read accessibility windows failed: ${error.message}") }
+                    .getOrDefault(emptyList())
+                    .mapNotNull { window ->
+                        runCatching { window.root }
+                            .onFailure { error -> Log.w(TAG, "read window root failed: ${error.message}") }
+                            .getOrNull()
+                    }
                     .forEach { root ->
                         if (none { it == root }) add(root)
                     }
@@ -686,47 +822,91 @@ class AutoClickAccessibilityService : AccessibilityService() {
         if (roots.isEmpty()) return emptyList()
 
         val nodes = mutableListOf<AccessibilityNodeInfo>()
-        roots.forEach { root ->
+        val visitedCount = intArrayOf(0)
+        for (root in roots) {
+            if (visitedCount[0] >= MAX_NODE_TRAVERSAL_COUNT || nodes.size >= MAX_NODE_MATCHES) break
             runCatching { root.findAccessibilityNodeInfosByText(keyword) }
                 .onSuccess { found ->
                     found.orEmpty()
                         .filter { node ->
-                            matchesText(node.text?.toString().orEmpty(), keyword, exact) ||
-                                matchesText(node.contentDescription?.toString().orEmpty(), keyword, exact)
+                            matchesNodeText(node, keyword, exact)
                         }
+                        .take((MAX_NODE_MATCHES - nodes.size).coerceAtLeast(0))
                         .forEach(nodes::add)
                 }
-            traverseNodesByText(root, keyword, exact, nodes)
+                .onFailure { error -> Log.w(TAG, "find nodes by text failed: text=$keyword ${error.message}") }
+            runCatching {
+                traverseNodesByText(
+                    node = root,
+                    keyword = keyword,
+                    exact = exact,
+                    matches = nodes,
+                    depth = 0,
+                    visitedCount = visitedCount
+                )
+            }.onFailure { error ->
+                Log.w(TAG, "traverse nodes failed: text=$keyword ${error.message}")
+            }
         }
         return nodes
-            .filter { node ->
-                Rect().also(node::getBoundsInScreen).let { it.width() > 0 && it.height() > 0 }
+            .mapNotNull { node ->
+                runCatching {
+                    Rect().also(node::getBoundsInScreen)
+                }.onFailure { error ->
+                    Log.w(TAG, "read node bounds failed: ${error.message}")
+                }.getOrNull()
             }
-            .distinctBy { node ->
-                val rect = Rect().also(node::getBoundsInScreen)
-                "${node.windowId}:${node.viewIdResourceName.orEmpty()}:${node.text?.toString().orEmpty()}:${rect.left},${rect.top},${rect.right},${rect.bottom}"
-            }
+            .filter { rect -> rect.width() > 0 && rect.height() > 0 }
+            .distinctBy { rect -> rect.rectKey() }
     }
 
     private fun traverseNodesByText(
         node: AccessibilityNodeInfo,
         keyword: String,
         exact: Boolean,
-        matches: MutableList<AccessibilityNodeInfo>
+        matches: MutableList<AccessibilityNodeInfo>,
+        depth: Int,
+        visitedCount: IntArray
     ) {
-        val nodeText = node.text?.toString().orEmpty()
-        val contentDescription = node.contentDescription?.toString().orEmpty()
-        if (
-            matchesText(nodeText, keyword, exact) ||
-            matchesText(contentDescription, keyword, exact)
-        ) {
+        if (depth > MAX_NODE_TRAVERSAL_DEPTH) return
+        if (visitedCount[0] >= MAX_NODE_TRAVERSAL_COUNT) return
+        if (matches.size >= MAX_NODE_MATCHES) return
+        visitedCount[0]++
+
+        if (matchesNodeText(node, keyword, exact)) {
             matches.add(node)
+            if (matches.size >= MAX_NODE_MATCHES) return
         }
-        repeat(node.childCount) { index ->
-            node.getChild(index)?.let { child ->
-                traverseNodesByText(child, keyword, exact, matches)
+        val childCount = runCatching { node.childCount }.getOrDefault(0)
+        repeat(childCount) { index ->
+            if (visitedCount[0] >= MAX_NODE_TRAVERSAL_COUNT || matches.size >= MAX_NODE_MATCHES) {
+                return@repeat
+            }
+            runCatching { node.getChild(index) }
+                .onFailure { error -> Log.w(TAG, "read child node failed: ${error.message}") }
+                .getOrNull()
+                ?.let { child ->
+                    traverseNodesByText(
+                        node = child,
+                        keyword = keyword,
+                        exact = exact,
+                        matches = matches,
+                        depth = depth + 1,
+                        visitedCount = visitedCount
+                    )
             }
         }
+    }
+
+    private fun matchesNodeText(
+        node: AccessibilityNodeInfo,
+        keyword: String,
+        exact: Boolean
+    ): Boolean {
+        val nodeText = runCatching { node.text?.toString().orEmpty() }.getOrDefault("")
+        val contentDescription = runCatching { node.contentDescription?.toString().orEmpty() }.getOrDefault("")
+        return matchesText(nodeText, keyword, exact) ||
+            matchesText(contentDescription, keyword, exact)
     }
 
     private fun matchesText(
