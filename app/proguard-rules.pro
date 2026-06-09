@@ -26,3 +26,13 @@
 -keepclassmembers,allowoptimization class org.xiaobu.autoclick.data.** {
     <fields>;
 }
+
+# ML Kit bundled text recognition uses native code, generated proto classes,
+# Dynamite descriptors, and reflection-heavy registrars. Keep the OCR runtime
+# intact in release builds so R8 does not break Chinese text recognition.
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_text_common.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_text_bundled_common.** { *; }
+-keep class com.google.android.gms.dynamite.descriptors.com.google.mlkit.dynamite.text.** { *; }
+-keep class com.google.android.libraries.vision.** { *; }
+-keep class com.google.android.apps.common.proguard.** { *; }
