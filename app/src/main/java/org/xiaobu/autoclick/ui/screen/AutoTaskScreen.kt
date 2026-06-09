@@ -77,6 +77,7 @@ import kotlinx.coroutines.delay
 import org.xiaobu.autoclick.AutoClickApp
 import org.xiaobu.autoclick.data.task.AutoTaskActionType
 import org.xiaobu.autoclick.data.task.AutoTaskConfig
+import org.xiaobu.autoclick.data.task.AutoTaskFailureStrategy
 import org.xiaobu.autoclick.data.task.AutoTaskStep
 import org.xiaobu.autoclick.data.task.AutoTaskTarget
 import org.xiaobu.autoclick.data.task.AutoTaskTargetType
@@ -932,12 +933,19 @@ private fun SectionSurface(content: @Composable ColumnScope.() -> Unit) {
 private fun buildStepSummary(step: AutoTaskStep): String {
     val actionText = when (step.actionType) {
         AutoTaskActionType.WAIT -> "等待 ${step.durationMs}ms"
+        AutoTaskActionType.WAIT_FOR_TARGET -> "等待出现 ${buildTargetSummary(step.target)}，最多 ${step.durationMs}ms"
+        AutoTaskActionType.WAIT_FOR_TARGET_DISAPPEAR -> "等待消失 ${buildTargetSummary(step.target)}，最多 ${step.durationMs}ms"
         AutoTaskActionType.TAP -> "单击 ${buildTargetSummary(step.target)}"
         AutoTaskActionType.DOUBLE_TAP -> "双击 ${buildTargetSummary(step.target)}"
         AutoTaskActionType.LONG_PRESS -> "长按 ${buildTargetSummary(step.target)}"
         AutoTaskActionType.SWIPE -> "从 ${buildTargetSummary(step.target)} 滑动到 ${
             buildTargetSummary(step.secondaryTarget)
         }"
+        AutoTaskActionType.SWIPE_UP -> "上滑"
+        AutoTaskActionType.SWIPE_DOWN -> "下滑"
+        AutoTaskActionType.SWIPE_LEFT -> "左滑"
+        AutoTaskActionType.SWIPE_RIGHT -> "右滑"
+        AutoTaskActionType.OPEN_APP -> "打开 ${step.appLabel.ifBlank { "应用" }}"
         AutoTaskActionType.BACK -> "执行返回"
         AutoTaskActionType.HOME -> "返回主页"
         AutoTaskActionType.RECENTS -> "打开最近任务"
@@ -945,10 +953,15 @@ private fun buildStepSummary(step: AutoTaskStep): String {
         AutoTaskActionType.QUICK_SETTINGS -> "打开快捷设置"
         AutoTaskActionType.LOCK_SCREEN -> "锁屏"
     }
-    return if (step.delayAfterMs > 0L) {
+    val delayText = if (step.delayAfterMs > 0L) {
         "$actionText · 延迟 ${step.delayAfterMs}ms"
     } else {
         actionText
+    }
+    return when (step.failureStrategy) {
+        AutoTaskFailureStrategy.CONTINUE -> "$delayText · 失败继续"
+        AutoTaskFailureStrategy.RETRY -> "$delayText · 失败重试 ${step.failureRetryCount} 次"
+        AutoTaskFailureStrategy.STOP -> delayText
     }
 }
 

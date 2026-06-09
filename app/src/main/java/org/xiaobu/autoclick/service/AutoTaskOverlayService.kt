@@ -31,6 +31,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.xiaobu.autoclick.AutoClickApp
+import org.xiaobu.autoclick.data.task.AutoTaskFailureStrategy
 import org.xiaobu.autoclick.ui.component.AutoTaskOverlayPanel
 import org.xiaobu.autoclick.ui.component.OverlayQuickControlBubble
 import org.xiaobu.autoclick.ui.theme.AutoclickTheme
@@ -238,14 +239,18 @@ class AutoTaskOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                         append(" · ")
                         append(step.title.ifBlank { step.actionType.title })
                     }
-                    val success = AutoClickAccessibilityService.executeTaskStep(step)
+                    val success = AutoClickAccessibilityService.executeTaskStepWithRetry(step)
                     if (!success) {
-                        finished = false
-                        panelStatusText = "执行失败，请检查步骤或权限"
-                        panelCurrentStepText = "停在 ${step.title.ifBlank { step.actionType.title }}"
-                        AutoClickApp.showToast("自动点击器执行失败")
-                        syncOverlayInteractionState()
-                        return@launch
+                        if (step.failureStrategy != AutoTaskFailureStrategy.CONTINUE) {
+                            finished = false
+                            panelStatusText = "执行失败，请检查步骤或权限"
+                            panelCurrentStepText = "停在 ${step.title.ifBlank { step.actionType.title }}"
+                            AutoClickApp.showToast("自动点击器执行失败")
+                            syncOverlayInteractionState()
+                            return@launch
+                        }
+                        panelStatusText = "步骤执行失败，已按策略继续"
+                        panelCurrentStepText = "跳过 ${step.title.ifBlank { step.actionType.title }}"
                     }
                     if (step.delayAfterMs > 0L) {
                         delay(step.delayAfterMs)

@@ -10,6 +10,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.random.Random
+import org.xiaobu.autoclick.data.task.AutoTaskActionType
+import org.xiaobu.autoclick.data.task.AutoTaskFailureStrategy
 import org.xiaobu.autoclick.data.task.AutoTaskStep
 import org.xiaobu.autoclick.data.task.AutoTaskTarget
 import org.xiaobu.autoclick.data.task.AutoTaskTargetType
@@ -132,9 +134,26 @@ class AutoTriggerStore(context: Context) {
             title = title.trim(),
             durationMs = durationMs.coerceAtLeast(20L),
             delayAfterMs = delayAfterMs.coerceAtLeast(0L),
-            target = target?.sanitize(),
-            secondaryTarget = secondaryTarget?.sanitize()
+            target = target?.sanitize()?.withAllowedTypeFor(actionType),
+            secondaryTarget = secondaryTarget?.sanitize(),
+            appPackageName = if (actionType.requiresAppTarget) appPackageName.trim() else "",
+            appLabel = if (actionType.requiresAppTarget) appLabel.trim() else "",
+            failureStrategy = safeFailureStrategy(),
+            failureRetryCount = safeFailureRetryCount()
         )
+    }
+
+    @Suppress("SENSELESS_COMPARISON")
+    private fun AutoTaskStep.safeFailureStrategy(): AutoTaskFailureStrategy {
+        return if (failureStrategy == null) AutoTaskFailureStrategy.STOP else failureStrategy
+    }
+
+    private fun AutoTaskStep.safeFailureRetryCount(): Int {
+        return if (safeFailureStrategy() == AutoTaskFailureStrategy.RETRY) {
+            failureRetryCount.coerceIn(1, MAX_FAILURE_RETRY_COUNT)
+        } else {
+            1
+        }
     }
 
     private fun AutoTaskTarget.sanitize(): AutoTaskTarget {
@@ -145,6 +164,19 @@ class AutoTriggerStore(context: Context) {
             index = index.coerceAtLeast(1),
             imageUri = imageUri.trim()
         )
+    }
+
+    private fun AutoTaskTarget.withAllowedTypeFor(actionType: AutoTaskActionType): AutoTaskTarget {
+        return if (actionType.isWaitTargetAction() && type == AutoTaskTargetType.COORDINATE) {
+            copy(type = AutoTaskTargetType.NODE_TEXT)
+        } else {
+            this
+        }
+    }
+
+    private fun AutoTaskActionType.isWaitTargetAction(): Boolean {
+        return this == AutoTaskActionType.WAIT_FOR_TARGET ||
+            this == AutoTaskActionType.WAIT_FOR_TARGET_DISAPPEAR
     }
 
     private fun AutoTriggerConfig.clearImageTargetUris(): AutoTriggerConfig {
@@ -205,6 +237,7 @@ class AutoTriggerStore(context: Context) {
         private const val LIST_KEY = "auto_trigger_list"
         private const val MAX_TRIGGERS = 20
         private const val MAX_STEPS = 100
+        private const val MAX_FAILURE_RETRY_COUNT = 10
         private const val EXPORT_TYPE = "auto_trigger_config"
         private const val EXPORT_VERSION = 1
     }

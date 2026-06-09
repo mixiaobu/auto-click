@@ -96,9 +96,26 @@ class AutoTaskStore(context: Context) {
             title = title.trim(),
             durationMs = durationMs.coerceAtLeast(20L),
             delayAfterMs = delayAfterMs.coerceAtLeast(0L),
-            target = target?.sanitize(),
-            secondaryTarget = secondaryTarget?.sanitize()
+            target = target?.sanitize()?.withAllowedTypeFor(actionType),
+            secondaryTarget = secondaryTarget?.sanitize(),
+            appPackageName = if (actionType.requiresAppTarget) appPackageName.trim() else "",
+            appLabel = if (actionType.requiresAppTarget) appLabel.trim() else "",
+            failureStrategy = safeFailureStrategy(),
+            failureRetryCount = safeFailureRetryCount()
         )
+    }
+
+    @Suppress("SENSELESS_COMPARISON")
+    private fun AutoTaskStep.safeFailureStrategy(): AutoTaskFailureStrategy {
+        return if (failureStrategy == null) AutoTaskFailureStrategy.STOP else failureStrategy
+    }
+
+    private fun AutoTaskStep.safeFailureRetryCount(): Int {
+        return if (safeFailureStrategy() == AutoTaskFailureStrategy.RETRY) {
+            failureRetryCount.coerceIn(1, MAX_FAILURE_RETRY_COUNT)
+        } else {
+            1
+        }
     }
 
     private fun AutoTaskTarget.sanitize(): AutoTaskTarget {
@@ -109,6 +126,19 @@ class AutoTaskStore(context: Context) {
             index = index.coerceAtLeast(1),
             imageUri = imageUri.trim()
         )
+    }
+
+    private fun AutoTaskTarget.withAllowedTypeFor(actionType: AutoTaskActionType): AutoTaskTarget {
+        return if (actionType.isWaitTargetAction() && type == AutoTaskTargetType.COORDINATE) {
+            copy(type = AutoTaskTargetType.NODE_TEXT)
+        } else {
+            this
+        }
+    }
+
+    private fun AutoTaskActionType.isWaitTargetAction(): Boolean {
+        return this == AutoTaskActionType.WAIT_FOR_TARGET ||
+            this == AutoTaskActionType.WAIT_FOR_TARGET_DISAPPEAR
     }
 
     private fun AutoTaskConfig.clearImageTargetUris(): AutoTaskConfig {
@@ -171,5 +201,6 @@ class AutoTaskStore(context: Context) {
         private const val EXPORT_VERSION = 1
         private const val MAX_TASKS = 20
         private const val MAX_STEPS = 100
+        private const val MAX_FAILURE_RETRY_COUNT = 10
     }
 }

@@ -14,6 +14,7 @@ import android.graphics.Point
 import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.Display
@@ -44,6 +45,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.xiaobu.autoclick.AutoClickApp
 import org.xiaobu.autoclick.data.task.AutoTaskActionType
+import org.xiaobu.autoclick.data.task.AutoTaskFailureStrategy
 import org.xiaobu.autoclick.data.task.AutoTaskStep
 import org.xiaobu.autoclick.data.task.AutoTaskTarget
 import org.xiaobu.autoclick.data.task.AutoTaskTargetType
@@ -74,6 +76,7 @@ class AutoClickAccessibilityService : AccessibilityService() {
         private const val MAX_NODE_TRAVERSAL_DEPTH = 60
         private const val MAX_NODE_TRAVERSAL_COUNT = 800
         private const val MAX_NODE_MATCHES = 200
+        private const val MAX_FAILURE_RETRY_COUNT = 10
 
         @Volatile
         private var currentService: AutoClickAccessibilityService? = null
@@ -184,6 +187,10 @@ class AutoClickAccessibilityService : AccessibilityService() {
             return currentService?.executeStep(step) == true
         }
 
+        suspend fun executeTaskStepWithRetry(step: AutoTaskStep): Boolean {
+            return currentService?.executeStepWithRetry(step) == true
+        }
+
         private fun Rect.centerPoint(): Point {
             return Point(centerX(), centerY())
         }
@@ -207,8 +214,8 @@ class AutoClickAccessibilityService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
-        serviceScope.cancel()
         removeKeepAliveOverlay()
+        serviceScope.cancel()
         if (currentService === this) {
             currentService = null
         }
@@ -310,8 +317,9 @@ class AutoClickAccessibilityService : AccessibilityService() {
                 val success = triggerExecutionMutex.withLock {
                     executeTriggerSteps(trigger)
                 }
-                if (!success) return@launch
-                AutoClickApp.showToast("已触发 ${trigger.name.ifBlank { "触发器" }}")
+                if (!success) {
+                    return@launch
+                }
             } catch (_: CancellationException) {
                 Log.d(TAG, "trigger canceled: ${trigger.name}")
             } catch (error: Throwable) {
@@ -329,7 +337,7 @@ class AutoClickAccessibilityService : AccessibilityService() {
     private suspend fun executeTriggerSteps(trigger: AutoTriggerConfig): Boolean {
         for (step in trigger.steps) {
             val success = try {
-                executeStep(step)
+                executeStepWithRetry(step)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -338,7 +346,9 @@ class AutoClickAccessibilityService : AccessibilityService() {
             }
             if (!success) {
                 Log.w(TAG, "trigger step failed: trigger=${trigger.name} step=${step.title}")
-                return false
+                if (step.failureStrategy != AutoTaskFailureStrategy.CONTINUE) {
+                    return false
+                }
             }
             if (step.delayAfterMs > 0L) {
                 delay(step.delayAfterMs)
@@ -409,6 +419,14 @@ class AutoClickAccessibilityService : AccessibilityService() {
                     true
                 }
 
+                AutoTaskActionType.WAIT_FOR_TARGET -> {
+                    waitForTarget(step.target, timeoutMs = step.durationMs.coerceAtLeast(20L), shouldExist = true)
+                }
+
+                AutoTaskActionType.WAIT_FOR_TARGET_DISAPPEAR -> {
+                    waitForTarget(step.target, timeoutMs = step.durationMs.coerceAtLeast(20L), shouldExist = false)
+                }
+
                 AutoTaskActionType.TAP -> {
                     val point = resolveTargetCenter(step.target) ?: return false
                     tapAwait(point, step.durationMs)
@@ -430,6 +448,27 @@ class AutoClickAccessibilityService : AccessibilityService() {
                     swipeAwait(from, to, durationMs = step.durationMs.coerceAtLeast(100L))
                 }
 
+                AutoTaskActionType.SWIPE_UP -> swipeScreen(
+                    direction = ScreenSwipeDirection.UP,
+                    durationMs = step.durationMs
+                )
+
+                AutoTaskActionType.SWIPE_DOWN -> swipeScreen(
+                    direction = ScreenSwipeDirection.DOWN,
+                    durationMs = step.durationMs
+                )
+
+                AutoTaskActionType.SWIPE_LEFT -> swipeScreen(
+                    direction = ScreenSwipeDirection.LEFT,
+                    durationMs = step.durationMs
+                )
+
+                AutoTaskActionType.SWIPE_RIGHT -> swipeScreen(
+                    direction = ScreenSwipeDirection.RIGHT,
+                    durationMs = step.durationMs
+                )
+
+                AutoTaskActionType.OPEN_APP -> openApp(step.appPackageName)
                 AutoTaskActionType.BACK -> performGlobalAction(GLOBAL_ACTION_BACK)
                 AutoTaskActionType.HOME -> performGlobalAction(GLOBAL_ACTION_HOME)
                 AutoTaskActionType.RECENTS -> performGlobalAction(GLOBAL_ACTION_RECENTS)
@@ -453,6 +492,91 @@ class AutoClickAccessibilityService : AccessibilityService() {
             Log.w(TAG, "execute step failed: ${step.actionType} ${step.title}")
         }
         return success
+    }
+
+    private suspend fun executeStepWithRetry(step: AutoTaskStep): Boolean {
+        var retryIndex = 0
+        while (true) {
+            if (executeStep(step)) return true
+            if (step.failureStrategy != AutoTaskFailureStrategy.RETRY) return false
+            if (retryIndex >= step.safeFailureRetryCount()) return false
+            retryIndex++
+            Log.d(TAG, "retry step: ${step.actionType} ${step.title} attempt=$retryIndex")
+        }
+    }
+
+    private fun AutoTaskStep.safeFailureRetryCount(): Int {
+        return failureRetryCount.coerceIn(1, MAX_FAILURE_RETRY_COUNT)
+    }
+
+    private suspend fun waitForTarget(
+        target: AutoTaskTarget?,
+        timeoutMs: Long,
+        shouldExist: Boolean
+    ): Boolean {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs.coerceAtLeast(20L)
+        val intervalMs = waitTargetPollIntervalMs(target)
+        while (true) {
+            val found = resolveTargetCenter(target) != null
+            if (found == shouldExist) return true
+            val remainingMs = deadline - SystemClock.elapsedRealtime()
+            if (remainingMs <= 0L) return false
+            delay(minOf(intervalMs, remainingMs))
+        }
+    }
+
+    private fun waitTargetPollIntervalMs(target: AutoTaskTarget?): Long {
+        return when (target?.type) {
+            AutoTaskTargetType.NODE_TEXT -> 250L
+            AutoTaskTargetType.OCR_TEXT -> 1_000L
+            AutoTaskTargetType.IMAGE -> 800L
+            AutoTaskTargetType.COORDINATE,
+            null -> 250L
+        }
+    }
+
+    private fun openApp(packageName: String): Boolean {
+        val safePackageName = packageName.trim()
+        if (safePackageName.isBlank()) return false
+        val launchIntent = packageManager.getLaunchIntentForPackage(safePackageName)
+            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            ?: return false
+        return runCatching {
+            startActivity(launchIntent)
+            true
+        }.onFailure { error ->
+            Log.e(TAG, "open app failed: packageName=$safePackageName", error)
+        }.getOrDefault(false)
+    }
+
+    private suspend fun swipeScreen(
+        direction: ScreenSwipeDirection,
+        durationMs: Long
+    ): Boolean {
+        val metrics = resources.displayMetrics
+        val width = metrics.widthPixels
+        val height = metrics.heightPixels
+        if (width < 2 || height < 2) return false
+        val centerX = width / 2
+        val centerY = height / 2
+        val horizontalStartX = (width * 0.80f).toInt().coerceIn(1, width - 1)
+        val horizontalEndX = (width * 0.20f).toInt().coerceIn(1, width - 1)
+        val verticalStartY = (height * 0.75f).toInt().coerceIn(1, height - 1)
+        val verticalEndY = (height * 0.25f).toInt().coerceIn(1, height - 1)
+        val (from, to) = when (direction) {
+            ScreenSwipeDirection.UP -> Point(centerX, verticalStartY) to Point(centerX, verticalEndY)
+            ScreenSwipeDirection.DOWN -> Point(centerX, verticalEndY) to Point(centerX, verticalStartY)
+            ScreenSwipeDirection.LEFT -> Point(horizontalStartX, centerY) to Point(horizontalEndX, centerY)
+            ScreenSwipeDirection.RIGHT -> Point(horizontalEndX, centerY) to Point(horizontalStartX, centerY)
+        }
+        return swipeAwait(from, to, durationMs = durationMs.coerceAtLeast(100L))
+    }
+
+    private enum class ScreenSwipeDirection {
+        UP,
+        DOWN,
+        LEFT,
+        RIGHT
     }
 
     private suspend fun resolveTargetCenter(target: AutoTaskTarget?): Point? {

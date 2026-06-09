@@ -8,8 +8,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -19,8 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,8 +35,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -57,7 +55,6 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,11 +82,11 @@ import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.delay
 import org.xiaobu.autoclick.AutoClickApp
-import org.xiaobu.autoclick.data.app.InstalledAppInfo
 import org.xiaobu.autoclick.data.app.getAppIcon
 import org.xiaobu.autoclick.data.app.getInstalledAppInfo
 import org.xiaobu.autoclick.data.app.resolveAppLabel
 import org.xiaobu.autoclick.data.task.AutoTaskActionType
+import org.xiaobu.autoclick.data.task.AutoTaskFailureStrategy
 import org.xiaobu.autoclick.data.task.AutoTaskStep
 import org.xiaobu.autoclick.data.task.AutoTaskTarget
 import org.xiaobu.autoclick.data.task.AutoTaskTargetType
@@ -101,6 +98,8 @@ import org.xiaobu.autoclick.ui.component.ActionStepCoordinateSlot
 import org.xiaobu.autoclick.ui.component.ActionStepEditorDialog
 import org.xiaobu.autoclick.ui.component.ActionStepEditorState
 import org.xiaobu.autoclick.ui.component.ActionStepTargetPickerSlot
+import org.xiaobu.autoclick.ui.component.AppPickerDialog
+import org.xiaobu.autoclick.ui.component.AppPickerSelectionMode
 import org.xiaobu.autoclick.ui.component.validateActionStepEditor
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -405,16 +404,26 @@ fun TriggerScreen(onBack: () -> Unit) {
     }
 
     if (showAppPicker) {
-        TriggerAppPickerDialog(
+        AppPickerDialog(
             apps = remember(context) { context.getInstalledAppInfo() },
-            selectedApps = draftTrigger.targetApps,
+            selectedPackageNames = draftTrigger.targetApps
+                .map { it.packageName }
+                .filter { it.isNotBlank() }
+                .toSet(),
+            selectionMode = AppPickerSelectionMode.MULTIPLE,
             onDismiss = { showAppPicker = false },
             onConfirm = { apps ->
+                val selectedApps = apps.map {
+                    AutoTriggerApp(
+                        packageName = it.packageName,
+                        appLabel = it.appLabel
+                    )
+                }
                 syncDraft(
                     draftTrigger.copy(
-                        targetApps = apps,
-                        packageName = apps.firstOrNull()?.packageName.orEmpty(),
-                        appLabel = apps.firstOrNull()?.appLabel.orEmpty()
+                        targetApps = selectedApps,
+                        packageName = selectedApps.firstOrNull()?.packageName.orEmpty(),
+                        appLabel = selectedApps.firstOrNull()?.appLabel.orEmpty()
                     )
                 )
                 showAppPicker = false
@@ -950,296 +959,99 @@ private fun TriggerEventPickerDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Surface(
-            color = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(20.dp),
-            shadowElevation = 8.dp,
+        BoxWithConstraints(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 28.dp)
+                .fillMaxSize()
+                .padding(horizontal = 20.dp, vertical = 20.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 8.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 560.dp)
+                    .heightIn(max = maxHeight)
             ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                AutoTriggerEventType.entries.forEach { eventType ->
-                    val selected = eventType in selectedSet
-                    Surface(
-                        onClick = {
-                            selectedSet = if (selected) selectedSet - eventType else selectedSet + eventType
-                        },
-                        color = if (selected) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
-                        } else {
-                            MaterialTheme.colorScheme.surface
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(checked = selected, onCheckedChange = null)
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = eventType.title,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    text = eventType.description,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("取消")
-                    }
-                    Button(
-                        onClick = {
-                            onConfirm(selectedSet.ifEmpty { setOf(AutoTriggerEventType.PAGE_NAVIGATED) }.toList())
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("确定")
-                    }
-                }
-            }
-        }
-    }
-}
-
-private enum class TriggerAppFilter(val title: String) {
-    ALL("全部应用"),
-    USER("用户应用"),
-    SYSTEM("系统应用")
-}
-
-@Composable
-private fun TriggerAppPickerDialog(
-    apps: List<InstalledAppInfo>,
-    selectedApps: List<AutoTriggerApp>,
-    onDismiss: () -> Unit,
-    onConfirm: (List<AutoTriggerApp>) -> Unit
-) {
-    var keyword by rememberSaveable { mutableStateOf("") }
-    var filter by remember { mutableStateOf(TriggerAppFilter.USER) }
-    var filterExpanded by remember { mutableStateOf(false) }
-    val initiallySelectedPackageSet = remember(selectedApps) {
-        selectedApps.map { it.packageName }.filter { it.isNotBlank() }.toSet()
-    }
-    var selectedPackageSet by remember(selectedApps) {
-        mutableStateOf(initiallySelectedPackageSet)
-    }
-    val selectedLabelMap = remember(selectedApps) {
-        selectedApps.associate { it.packageName to it.appLabel }
-    }
-    val filteredApps = remember(apps, keyword, filter, initiallySelectedPackageSet) {
-        val trimmed = keyword.trim()
-        apps
-            .filter { app ->
-                app.packageName in initiallySelectedPackageSet || when (filter) {
-                    TriggerAppFilter.ALL -> true
-                    TriggerAppFilter.USER -> !app.isSystemApp
-                    TriggerAppFilter.SYSTEM -> app.isSystemApp
-                }
-            }
-            .filter { app ->
-                trimmed.isBlank() ||
-                    app.appLabel.contains(trimmed, ignoreCase = true) ||
-                    app.packageName.contains(trimmed, ignoreCase = true)
-            }
-            .sortedWith(
-                compareByDescending<InstalledAppInfo> { it.packageName in initiallySelectedPackageSet }
-                    .thenBy { it.appLabel.lowercase() }
-                    .thenBy { it.packageName }
-            )
-    }
-    val allFilteredSelected = filteredApps.isNotEmpty() &&
-        filteredApps.all { it.packageName in selectedPackageSet }
-
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            color = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(20.dp),
-            shadowElevation = 8.dp,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 28.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        text = "选择应用",
+                        text = title,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.SemiBold
                     )
-                    Box {
-                        OutlinedButton(onClick = { filterExpanded = true }) {
-                            Text(filter.title)
-                        }
-                        DropdownMenu(
-                            expanded = filterExpanded,
-                            onDismissRequest = { filterExpanded = false }
-                        ) {
-                            TriggerAppFilter.entries.forEach { item ->
-                                DropdownMenuItem(
-                                    text = { Text(item.title) },
-                                    onClick = {
-                                        filter = item
-                                        filterExpanded = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-                OutlinedTextField(
-                    value = keyword,
-                    onValueChange = { keyword = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("搜索应用") },
-                    placeholder = { Text("输入应用名或包名") },
-                    singleLine = true
-                )
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 420.dp)
-                ) {
-                    if (filteredApps.isEmpty()) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.background,
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = "没有找到匹配的应用",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(12.dp)
-                            )
-                        }
-                    } else {
-                        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(filteredApps, key = { it.packageName }) { app ->
-                                val selected = app.packageName in selectedPackageSet
-                                Surface(
-                                    onClick = {
-                                        selectedPackageSet = if (selected) {
-                                            selectedPackageSet - app.packageName
-                                        } else {
-                                            selectedPackageSet + app.packageName
-                                        }
-                                    },
-                                    color = if (selected) {
-                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
-                                    } else {
-                                        MaterialTheme.colorScheme.background
-                                    },
-                                    shape = RoundedCornerShape(12.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 12.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Checkbox(checked = selected, onCheckedChange = null)
-                                        TriggerAppIcon(packageName = app.packageName)
-                                        Column(
-                                            modifier = Modifier.weight(1f),
-                                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            Text(
-                                                text = app.appLabel,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                            )
-                                            Text(
-                                                text = if (app.isSystemApp) "系统应用" else "用户应用",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        horizontalArrangement = Arrangement.Start,
-                        verticalAlignment = Alignment.CenterVertically
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false)
+                            .heightIn(max = 420.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Checkbox(
-                            checked = allFilteredSelected,
-                            onCheckedChange = { checked ->
-                                selectedPackageSet = if (checked) {
-                                    selectedPackageSet + filteredApps.map { it.packageName }
+                        AutoTriggerEventType.entries.forEach { eventType ->
+                            val selected = eventType in selectedSet
+                            Surface(
+                                onClick = {
+                                    selectedSet = if (selected) selectedSet - eventType else selectedSet + eventType
+                                },
+                                color = if (selected) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
                                 } else {
-                                    selectedPackageSet - filteredApps.map { it.packageName }.toSet()
+                                    MaterialTheme.colorScheme.surface
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(checked = selected, onCheckedChange = null)
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text(
+                                            text = eventType.title,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = if (selected) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            },
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = eventType.description,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 }
                             }
-                        )
-                        Text("全选", style = MaterialTheme.typography.bodyMedium)
+                        }
                     }
-                    OutlinedButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.weight(1f)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Text("取消")
-                    }
-                    Button(
-                        onClick = {
-                            val selectedResult = apps
-                                .filter { it.packageName in selectedPackageSet }
-                                .map {
-                                    AutoTriggerApp(
-                                        packageName = it.packageName,
-                                        appLabel = selectedLabelMap[it.packageName].orEmpty()
-                                            .ifBlank { it.appLabel }
-                                    )
-                                }
-                            onConfirm(selectedResult)
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("确定")
+                        OutlinedButton(
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("取消")
+                        }
+                        Button(
+                            onClick = {
+                                onConfirm(selectedSet.ifEmpty { setOf(AutoTriggerEventType.PAGE_NAVIGATED) }.toList())
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("确定")
+                        }
                     }
                 }
             }
@@ -1323,18 +1135,30 @@ private fun validateTriggerDraft(trigger: AutoTriggerConfig): String? {
 }
 
 private fun buildStepSummary(step: AutoTaskStep): String {
-    return when (step.actionType) {
+    val actionText = when (step.actionType) {
         AutoTaskActionType.WAIT -> "等待 ${step.durationMs}ms"
+        AutoTaskActionType.WAIT_FOR_TARGET -> "等待出现 ${buildTargetSummary(step.target)}，最多 ${step.durationMs}ms"
+        AutoTaskActionType.WAIT_FOR_TARGET_DISAPPEAR -> "等待消失 ${buildTargetSummary(step.target)}，最多 ${step.durationMs}ms"
         AutoTaskActionType.TAP -> "单击 ${buildTargetSummary(step.target)}"
         AutoTaskActionType.DOUBLE_TAP -> "双击 ${buildTargetSummary(step.target)}"
         AutoTaskActionType.LONG_PRESS -> "长按 ${buildTargetSummary(step.target)}"
         AutoTaskActionType.SWIPE -> "从 ${buildTargetSummary(step.target)} 滑动到 ${buildTargetSummary(step.secondaryTarget)}"
+        AutoTaskActionType.SWIPE_UP -> "上滑"
+        AutoTaskActionType.SWIPE_DOWN -> "下滑"
+        AutoTaskActionType.SWIPE_LEFT -> "左滑"
+        AutoTaskActionType.SWIPE_RIGHT -> "右滑"
+        AutoTaskActionType.OPEN_APP -> "打开 ${step.appLabel.ifBlank { "应用" }}"
         AutoTaskActionType.BACK -> "执行返回"
         AutoTaskActionType.HOME -> "返回主页"
         AutoTaskActionType.RECENTS -> "打开最近任务"
         AutoTaskActionType.NOTIFICATIONS -> "打开通知栏"
         AutoTaskActionType.QUICK_SETTINGS -> "打开快捷设置"
         AutoTaskActionType.LOCK_SCREEN -> "锁屏"
+    }
+    return when (step.failureStrategy) {
+        AutoTaskFailureStrategy.CONTINUE -> "$actionText · 失败继续"
+        AutoTaskFailureStrategy.RETRY -> "$actionText · 失败重试 ${step.failureRetryCount} 次"
+        AutoTaskFailureStrategy.STOP -> actionText
     }
 }
 
